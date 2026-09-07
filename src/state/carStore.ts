@@ -7,12 +7,14 @@ import { create } from 'zustand'
  */
 interface CarState {
   z: number
+  x: number
   speed: number
-  set: (z: number, speed: number) => void
+  set: (z: number, speed: number, x: number) => void
 }
 
 export const useCarStore = create<CarState>((set) => ({
   z: 0,
+  x: 0,
   speed: 0,
-  set: (z, speed) => set({ z, speed }),
+  set: (z, speed, x) => set({ z, speed, x }),
 }))

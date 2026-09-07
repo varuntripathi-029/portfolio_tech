@@ -44,9 +44,10 @@ export const BANDS: Band[] = [
 ]
 
 /**
- * Pit lane branches off to the right within the runoff band. No event data
- * exists yet (that is phase 4), so this single stretch is a placeholder to
- * show the surface-change cue; phase 4 will drive its real position(s).
+ * Pit lane branches off within the runoff band at every timeline event
+ * (see src/data/timeline.ts for the trackZ values). Cross-section only;
+ * per-event z-ranges are derived from PIT_ENTRY_LEAD / PIT_EXIT_LEAD around
+ * each event's trackZ, not stored here.
  */
 export const PIT_LANE = {
   dir: 'asphalt_pit_lane',
@@ -57,6 +58,11 @@ export const PIT_LANE = {
   // chase cam (verified visually), which is where the pit lane branches.
   side: -1 as const,
   y: 0.005,
-  zStart: 300,
-  zEnd: 500,
 }
+
+/** Metres before an event's trackZ where the car starts decelerating in. */
+export const PIT_ENTRY_LEAD = 60
+/** Metres after trackZ before the car is fully back on the racing line. */
+export const PIT_EXIT_LEAD = 40
+/** Lateral offset (world X) of the pit bay, centred in the pit lane band. */
+export const PIT_BAY_X = PIT_LANE.side * (PIT_LANE.inner + (PIT_LANE.outer - PIT_LANE.inner) / 2)

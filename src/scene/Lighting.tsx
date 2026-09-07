@@ -45,7 +45,7 @@ export function Lighting() {
   return (
     <directionalLight
       ref={light}
-      intensity={6}
+      intensity={3}
       castShadow
       shadow-mapSize={[1024, 1024]}
       shadow-camera-left={-SHADOW_EXTENT}

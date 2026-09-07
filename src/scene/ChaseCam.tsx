@@ -20,8 +20,8 @@ export function ChaseCam() {
     // its target, erasing the follow lag for a single, jarring frame.
     const delta = Math.min(rawDelta, 1 / 30)
 
-    const { z, speed } = useCarStore.getState()
-    carPos.set(0, 0, z)
+    const { x, z, speed } = useCarStore.getState()
+    carPos.set(x, 0, z)
     desired.copy(carPos).add(RIG_OFFSET)
     // Feed-forward: exponential smoothing alone settles at a lag of
     // speed / FOLLOW_RATE behind a constantly-moving target. Motion here is

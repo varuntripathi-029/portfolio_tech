@@ -20,10 +20,13 @@ function BarrierLine({ x }: { x: number }) {
     () => new THREE.BoxGeometry(SEGMENT_WIDTH, SEGMENT_HEIGHT, SEGMENT_LENGTH - SEGMENT_GAP),
     [],
   )
-  // Fully matte: anything less lets the bright sunset sky's specular wash
-  // both the white and red segments toward the same pale glare (same issue
-  // as the LED boards).
-  const material = useMemo(() => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 }), [])
+  // Fully matte plus a reduced envMapIntensity: flat paint under a bright
+  // sunset sky was still picking up enough sky wash to hide the alternating
+  // colour (see PHASE3_NOTES.md).
+  const material = useMemo(
+    () => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, envMapIntensity: 0.3 }),
+    [],
+  )
 
   useLayoutEffect(() => {
     for (let i = 0; i < COUNT; i++) {

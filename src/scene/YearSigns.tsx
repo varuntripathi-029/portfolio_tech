@@ -1,8 +1,9 @@
 import { useLayoutEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
-import { BARRIER_X, TRACK_LENGTH } from './trackLayout'
+import { BARRIER_X } from './trackLayout'
 import { buildBillboardGeometry } from './billboardGeometry'
-import { makeYearAtlas, yearCellUV, YEAR_COUNT } from './yearSignAtlas'
+import { makeYearAtlas, yearCellUV } from './yearSignAtlas'
+import { TIMELINE } from '../data/timeline'
 
 // Negative X reads as the driver's right in the forward-facing chase cam
 // (verified visually), matching the spec's "Right Side" placement.
@@ -11,13 +12,19 @@ const SIGN_WIDTH = 2
 const SIGN_HEIGHT = 4
 const POST_HEIGHT = 1.5
 const SIGN_Y = POST_HEIGHT + SIGN_HEIGHT / 2
+const SIGN_LEAD = 20 // metres before that year's first event
 
+const YEARS = [2023, 2024, 2025, 2026]
+
+/** Each sign sits just before the first timeline event of that year. */
 function signPositions(): number[] {
-  const spacing = TRACK_LENGTH / (YEAR_COUNT + 1)
-  return Array.from({ length: YEAR_COUNT }, (_, i) => spacing * (i + 1))
+  return YEARS.map((year) => {
+    const zs = TIMELINE.filter((e) => e.year === year).map((e) => e.trackZ)
+    return Math.max(10, Math.min(...zs) - SIGN_LEAD)
+  })
 }
 
-/** Year signboards, right side. Timeline event billboards are phase 4. */
+/** Year signboards, right side. Event billboards are built separately. */
 export function YearSigns() {
   const zPositions = useMemo(signPositions, [])
 

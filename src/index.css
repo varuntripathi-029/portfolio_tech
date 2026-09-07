@@ -26,3 +26,33 @@ body,
   background: var(--color-carbon);
   font-family: var(--font-display);
 }
+
+/* Angled corner cuts, the authentic F1 graphic language this project uses
+   instead of rounded corners. --cut controls the chamfer size. */
+.chamfer {
+  --cut: 14px;
+  clip-path: polygon(
+    var(--cut) 0,
+    100% 0,
+    100% calc(100% - var(--cut)),
+    calc(100% - var(--cut)) 100%,
+    0 100%,
+    0 var(--cut)
+  );
+}
+
+.chamfer-sm {
+  --cut: 8px;
+  clip-path: polygon(
+    var(--cut) 0,
+    100% 0,
+    100% calc(100% - var(--cut)),
+    calc(100% - var(--cut)) 100%,
+    0 100%,
+    0 var(--cut)
+  );
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
