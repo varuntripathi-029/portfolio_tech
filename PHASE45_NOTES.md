@@ -1,21 +1,31 @@
 # Phase 4/5 notes
 
-## Blocked
+## Resolved: barrier colour (was misdiagnosed as lighting/exposure)
 
-**Barrier alternating white/red still reads as a uniform dark tone.**
+**Root cause: `vertexColors: true` on the barrier material, with no `color`
+geometry attribute on the BoxGeometry.** `vertexColors` and `instanceColor`
+are different features. `vertexColors: true` defines `USE_COLOR`, which reads
+a per-vertex `color` attribute; with none bound, it reads as `(0,0,0)`, and
+three's `color_vertex` chunk multiplies `vColor *= color` *before*
+`vColor.xyz *= instanceColor.xyz`, zeroing every segment to black regardless
+of the instance buffer. `setColorAt` enables `USE_INSTANCING_COLOR` on its
+own and needs no material flag. Removed `vertexColors` from Barriers.tsx;
+confirmed visually, both barrier lines now show a clear alternating
+white/red pattern.
 
-Step 0a's one prescribed attempt: `environmentIntensity` on `<Environment>` dropped
-to 0.6, directional light intensity dropped from 6 to 3, `envMapIntensity: 0.3` added
-to the barrier material. Rebuilt and checked both the sun-facing and shadowed
-barrier lines after the change: both still read as a uniform dark
-brown/near-black band, no visible white/red alternation.
+This means the phase 3 and phase 4/5 "exposure" fixes (environmentIntensity
+0.6, light intensity 3, envMapIntensity 0.3) were chasing a symptom with a
+different real cause. Re-checked the scene after the real fix: it does not
+read flat or underlit at those values (car, kerb and barriers all show good
+contrast and highlights), so left them as-is rather than raising intensity
+back up.
 
-The instance colour buffer itself was already confirmed correct in phase 3
-(alternating linear-space white/red values), so the data and the shader
-mechanism are not the issue. This now looks like it needs either a brighter
-albedo pair, a small emissive push, or a second directional fill light, none
-of which were in scope for the one prescribed attempt. Left as-is per the rule,
-noted here rather than trying a second fix.
+Audited every other component using `setColorAt`/`instanceColor`
+(LedBoards, Grandstands, LightPoles, MarshalPosts, GantryBridges, YearSigns,
+EventBillboards): none of them combine it with `vertexColors: true`.
+MarshalPosts does use `vertexColors: true`, but legitimately: it bakes a
+real per-vertex `color` attribute onto its merged geometry and never touches
+`instanceColor`, so it was left untouched.
 
 ## Real bug found and fixed during live verification
 

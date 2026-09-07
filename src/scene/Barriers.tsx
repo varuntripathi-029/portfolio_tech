@@ -20,11 +20,13 @@ function BarrierLine({ x }: { x: number }) {
     () => new THREE.BoxGeometry(SEGMENT_WIDTH, SEGMENT_HEIGHT, SEGMENT_LENGTH - SEGMENT_GAP),
     [],
   )
-  // Fully matte plus a reduced envMapIntensity: flat paint under a bright
-  // sunset sky was still picking up enough sky wash to hide the alternating
-  // colour (see PHASE3_NOTES.md).
+  // No vertexColors here: that flag reads a per-vertex `color` geometry
+  // attribute (USE_COLOR), which BoxGeometry doesn't have. An unbound
+  // attribute reads as (0,0,0), and vColor *= color runs before the
+  // instance colour is applied, zeroing every segment to black regardless
+  // of instanceColor. setColorAt enables USE_INSTANCING_COLOR on its own.
   const material = useMemo(
-    () => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, envMapIntensity: 0.3 }),
+    () => new THREE.MeshStandardMaterial({ roughness: 1, envMapIntensity: 0.3 }),
     [],
   )
 
