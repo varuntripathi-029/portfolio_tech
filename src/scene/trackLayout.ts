@@ -42,3 +42,21 @@ export const BANDS: Band[] = [
   { id: 'gravel', inner: 10, outer: 13, tile: 3, dir: 'gravel_floor_02', receiveShadow: false, y: 0.006 },
   { id: 'grass', inner: 13, outer: 17, tile: 2, dir: 'sparse_grass', receiveShadow: false, y: 0.008 },
 ]
+
+/**
+ * Pit lane branches off to the right within the runoff band. No event data
+ * exists yet (that is phase 4), so this single stretch is a placeholder to
+ * show the surface-change cue; phase 4 will drive its real position(s).
+ */
+export const PIT_LANE = {
+  dir: 'asphalt_pit_lane',
+  tile: 4,
+  inner: 7,
+  outer: 10,
+  // Negative world X reads as the driver's right in the forward-facing
+  // chase cam (verified visually), which is where the pit lane branches.
+  side: -1 as const,
+  y: 0.005,
+  zStart: 300,
+  zEnd: 500,
+}
