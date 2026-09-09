@@ -19,9 +19,26 @@ import { ChaseCam } from './ChaseCam'
 
 export function Scene() {
   return (
-    <Canvas shadows camera={{ position: [0, 2.6, -8], fov: 55, near: 0.1, far: 3000 }}>
+    <Canvas
+      shadows
+      camera={{ position: [0, 2.6, -8], fov: 55, near: 0.1, far: 3000 }}
+      // environmentIntensity only dims the lighting contribution.
+      // backgroundIntensity is a separate property that defaults to 1, so the
+      // visible sky stayed blown to white while the scene got darker.
+      gl={{ toneMappingExposure: 0.65 }}
+    >
       <Suspense fallback={null}>
-        <Environment files="/hdri/qwantani_sunset_puresky_1k.hdr" background environmentIntensity={0.6} />
+        <Environment
+          files="/hdri/qwantani_sunset_puresky_1k.hdr"
+          background
+          // Sky sits well above 1.0 in radiance, and ACES desaturates
+          // everything it rolls off, which is why an orange sunset was
+          // arriving as pale cream. Scaling the background down before tone
+          // mapping restores the colour. Lighting is unaffected: that is
+          // environmentIntensity, which stays put.
+          backgroundIntensity={0.35}
+          environmentIntensity={0.6}
+        />
         <Lighting />
         <Ground />
         <RoadMarkings />
@@ -39,7 +56,7 @@ export function Scene() {
 
       <ChaseCam />
 
-      {import.meta.env.DEV && <Perf position="top-left" />}
+      {import.meta.env.DEV && <Perf position="bottom-left" />}
     </Canvas>
   )
 }
