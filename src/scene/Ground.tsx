@@ -21,9 +21,18 @@ function bandGeometry(band: Band, side: Side) {
     width,
     x,
     repeatX: width / band.tile,
-    repeatY: TRACK_LENGTH / band.tile,
+    repeatY: GROUND_LENGTH / band.tile,
   }
 }
+
+/**
+ * The chase cam sits 8m behind the car, so at the start line (z=0) it is
+ * looking from z=-8. Ground that begins exactly at z=0 leaves the near field
+ * rendering as bare sky. Overhang both ends so the world always extends past
+ * the camera and past the final event.
+ */
+const OVERHANG = 80
+const GROUND_LENGTH = TRACK_LENGTH + OVERHANG * 2
 
 function usePlaneGeometry(width: number, length: number) {
   return useMemo(() => new THREE.PlaneGeometry(width, length), [width, length])
@@ -37,7 +46,7 @@ function useAnisotropy() {
 function KerbBand({ band, side }: { band: Band; side: Side }) {
   const anisotropy = useAnisotropy()
   const { width, x, repeatX, repeatY } = bandGeometry(band, side)
-  const geometry = usePlaneGeometry(width, TRACK_LENGTH)
+  const geometry = usePlaneGeometry(width, GROUND_LENGTH)
   const texture = useMemo(() => makeKerbTexture(), [])
 
   const material = useMemo(() => {
@@ -61,7 +70,7 @@ function KerbBand({ band, side }: { band: Band; side: Side }) {
 function SurfaceBand({ band, side }: { band: Band; side: Side }) {
   const anisotropy = useAnisotropy()
   const { width, x, repeatX, repeatY } = bandGeometry(band, side)
-  const geometry = usePlaneGeometry(width, TRACK_LENGTH)
+  const geometry = usePlaneGeometry(width, GROUND_LENGTH)
 
   const { diff, nor, arm } = useTexture({
     diff: `/textures/${band.dir}/diff.jpg`,
