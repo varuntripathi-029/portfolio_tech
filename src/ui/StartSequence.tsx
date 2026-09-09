@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { motion, useReducedMotion } from 'motion/react'
+import { Panel, panelItem } from './Panel'
 
 const LIGHT_INTERVAL = 550
 
@@ -41,23 +43,33 @@ const STATS: Stat[] = [
   { label: 'Tyre Mgmt', sub: 'Systems and concurrency, 100k logs/sec', weight: 90 },
 ]
 
+/** The garnish. Deliberately narrower than the spec sheet beside it, so the
+ * substance reads as the main column rather than the two competing. */
 function DriverStats() {
+  // Bars grow from width 0, so without this guard a skipped animation leaves
+  // every bar empty rather than merely un-animated.
+  const reduce = useReducedMotion()
+
   return (
-    <div className="w-96">
-      <p className="font-mono text-xs tracking-[0.25em] text-smoke uppercase">Driver</p>
-      <div className="mt-2 space-y-3 border-t border-slate pt-3">
+    <Panel headerLeft="Driver" className="w-[340px] shrink-0">
+      <div className="space-y-4">
         {STATS.map((s) => (
-          <div key={s.label}>
-            <p className="font-mono text-xs tracking-widest text-paper uppercase">
+          <motion.div key={s.label} variants={panelItem}>
+            <p className="font-mono text-[11px] tracking-widest text-paper uppercase">
               {s.label} <span className="text-smoke normal-case">/ {s.sub}</span>
             </p>
-            <div className="mt-1 h-1.5 w-full bg-slate">
-              <div className="h-full bg-paper" style={{ width: `${s.weight}%` }} />
+            <div className="mt-1.5 h-1 w-full bg-slate">
+              <motion.div
+                className="h-full bg-paper"
+                initial={reduce ? false : { width: 0 }}
+                animate={{ width: `${s.weight}%` }}
+                transition={{ duration: 0.5, ease: 'easeOut', delay: 0.3 }}
+              />
             </div>
-          </div>
+          </motion.div>
         ))}
       </div>
-    </div>
+    </Panel>
   )
 }
 
@@ -75,21 +87,31 @@ const SPEC_GROUPS: { label: string; items: string[] }[] = [
 /** The more important half: a technical spec sheet of the actual skillset. */
 function CarSpecification() {
   return (
-    <div className="w-[440px]">
-      <p className="font-mono text-xs tracking-[0.25em] text-smoke uppercase">Car Specification</p>
-      <div className="mt-2 grid grid-cols-2 gap-x-6 gap-y-3 border-t border-slate pt-3">
+    <Panel
+      headerLeft="Car Specification"
+      headerRight={
+        <span className="shrink-0 font-mono text-[10px] tracking-widest text-slate uppercase">
+          RC-12
+        </span>
+      }
+      className="w-[520px] max-w-full"
+    >
+      <div className="grid grid-cols-2 gap-x-7 gap-y-4">
         {SPEC_GROUPS.map((g) => (
-          <div key={g.label}>
-            <p className="font-mono text-[11px] tracking-widest text-race-red uppercase">{g.label}</p>
-            <p className="mt-1 font-mono text-xs leading-relaxed text-paper">{g.items.join(' / ')}</p>
-          </div>
+          <motion.div key={g.label} variants={panelItem}>
+            <p className="font-mono text-[10px] tracking-[0.2em] text-race-red uppercase">{g.label}</p>
+            <p className="mt-1.5 font-mono text-xs leading-relaxed text-paper">{g.items.join(' / ')}</p>
+          </motion.div>
         ))}
       </div>
-      <div className="mt-4 space-y-1 border-t border-slate pt-3 font-mono text-xs text-smoke">
-        <p>B.Tech ECE (IoT), IIIT Nagpur. 2023 to 2027.</p>
+      <motion.div
+        variants={panelItem}
+        className="mt-5 space-y-1 border-t border-slate pt-4 font-mono text-xs text-smoke"
+      >
+        <p className="tabular">B.Tech ECE (IoT), IIIT Nagpur. 2023 to 2027.</p>
         <p className="tabular">LeetCode Knight, rating 1886. 300+ problems. 30+ public repos.</p>
-      </div>
-    </div>
+      </motion.div>
+    </Panel>
   )
 }
 
@@ -99,9 +121,11 @@ function CarSpecification() {
  */
 export function StartSequence() {
   return (
-    <div className="fixed inset-0 z-30 flex flex-col items-center gap-8 overflow-y-auto bg-carbon/85 px-6 py-10">
+    <div className="fixed inset-0 z-30 flex flex-col items-center gap-8 overflow-y-auto bg-carbon/80 px-6 pt-28 pb-10 backdrop-blur-[3px]">
       <div>
-        <p className="text-center font-mono text-xs tracking-[0.3em] text-smoke uppercase">Varun Tripathi</p>
+        <p className="text-center font-mono text-xs tracking-[0.3em] text-smoke uppercase">
+          Varun Tripathi
+        </p>
         <h1 className="mt-1 text-center text-4xl font-black tracking-tight text-paper uppercase">
           Race Engineer
         </h1>
@@ -109,7 +133,7 @@ export function StartSequence() {
 
       <StartLights />
 
-      <div className="flex flex-wrap justify-center gap-10">
+      <div className="flex flex-wrap items-start justify-center gap-6">
         <DriverStats />
         <CarSpecification />
       </div>
