@@ -14,6 +14,10 @@
   --color-flag-yellow: #FFD500;
   --color-flag-blue: #0090D0;
 
+  /* Live-data emphasis and hover only. Never a fill, never set adjacent to
+     race-red inside the same element. */
+  --color-hud-cyan: #00E0FF;
+
   --font-display: "Titillium Web", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 }
@@ -53,6 +57,32 @@ body,
   );
 }
 
+/* Panel chamfer: cuts the top-right and bottom-left, leaving the other two
+   corners square so the HUD corner brackets have somewhere to sit. Brackets
+   are drawn outside the clip, so they cannot be placed on a cut corner. */
+.chamfer-panel {
+  --cut: 20px;
+  clip-path: polygon(
+    0 0,
+    calc(100% - var(--cut)) 0,
+    100% var(--cut),
+    100% 100%,
+    var(--cut) 100%,
+    0 calc(100% - var(--cut))
+  );
+}
+
 .tabular {
   font-variant-numeric: tabular-nums;
+}
+
+/* 3% fractal noise. Flat vector panels read as generated; a little grain is
+   what stops that. Inline SVG so it costs no request and no asset. */
+.hud-noise::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.03;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
 }
