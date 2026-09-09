@@ -11,6 +11,14 @@ export interface BillboardSpec {
    * quad always reads mirrored. Set true for boards viewed by looking in
    * -X (the opposite convention from the default, viewed looking +X). */
   flip?: boolean
+  /**
+   * 'x' (default): quad lies in the YZ plane, width runs along Z. Trackside
+   * boards, read correctly from the -X side looking toward +X.
+   * 'z': quad lies in the XY plane, width runs along X. Overhead gantry
+   * panels, read by a car approaching from -Z. Because screen-right is -X
+   * when looking down +Z, U is laid out along decreasing X.
+   */
+  facing?: 'x' | 'z'
 }
 
 /**
@@ -30,14 +38,25 @@ export function buildBillboardGeometry(specs: BillboardSpec[]): THREE.BufferGeom
     const hw = spec.width / 2
     const hh = spec.height / 2
 
-    // Quad in the world YZ plane: Z spans width, Y spans height.
-    positions.push(
-      spec.x, spec.y - hh, spec.z - hw,
-      spec.x, spec.y - hh, spec.z + hw,
-      spec.x, spec.y + hh, spec.z + hw,
-      spec.x, spec.y + hh, spec.z - hw,
-    )
-    for (let v = 0; v < 4; v++) normals.push(1, 0, 0)
+    if (spec.facing === 'z') {
+      // Quad in the world XY plane, wound so U runs along decreasing X.
+      positions.push(
+        spec.x + hw, spec.y - hh, spec.z,
+        spec.x - hw, spec.y - hh, spec.z,
+        spec.x - hw, spec.y + hh, spec.z,
+        spec.x + hw, spec.y + hh, spec.z,
+      )
+      for (let v = 0; v < 4; v++) normals.push(0, 0, -1)
+    } else {
+      // Quad in the world YZ plane: Z spans width, Y spans height.
+      positions.push(
+        spec.x, spec.y - hh, spec.z - hw,
+        spec.x, spec.y - hh, spec.z + hw,
+        spec.x, spec.y + hh, spec.z + hw,
+        spec.x, spec.y + hh, spec.z - hw,
+      )
+      for (let v = 0; v < 4; v++) normals.push(1, 0, 0)
+    }
 
     const { u0, u1, v0, v1 } = spec.uv
     if (spec.flip) uvs.push(u1, v0, u0, v0, u0, v1, u1, v1)
