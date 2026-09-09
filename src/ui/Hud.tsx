@@ -1,12 +1,5 @@
 import { useCarStore } from '../state/carStore'
-import { TRACK_LENGTH } from '../scene/trackLayout'
-
-function sectorLabel(z: number): string {
-  const third = TRACK_LENGTH / 3
-  if (z < third) return 'Sector 1'
-  if (z < third * 2) return 'Sector 2'
-  return 'Sector 3'
-}
+import { sectorLabel } from './sector'
 
 /** Name plus sector, small and clean. No speed, gear, lap, or timing tower. */
 export function Hud() {
@@ -15,9 +8,9 @@ export function Hud() {
   const sector = useCarStore((s) => sectorLabel(s.z))
 
   return (
-    <div className="pointer-events-none fixed top-6 left-6 z-10">
-      <p className="font-mono text-xs uppercase tracking-[0.2em] text-smoke">Varun Tripathi</p>
-      <p className="mt-0.5 font-mono text-xs uppercase tracking-widest text-paper">{sector}</p>
+    // The name lives in the navbar now, so this is the sector alone.
+    <div className="pointer-events-none fixed top-24 left-6 z-10">
+      <p className="font-mono text-xs tracking-widest text-paper uppercase">{sector}</p>
     </div>
   )
 }
