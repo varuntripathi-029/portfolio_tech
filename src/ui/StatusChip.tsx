@@ -26,18 +26,22 @@ const CHIP: Record<NonNullable<ProjectStatus>, { label: string; color: string; e
   },
 }
 
+/** The pill alone. Lives in the panel header strip. */
 export function StatusChip({ status }: { status: NonNullable<ProjectStatus> }) {
   const chip = CHIP[status]
   return (
-    <div className="flex flex-col gap-1">
-      <span
-        className="inline-flex w-fit items-center gap-1.5 border px-2 py-0.5 font-mono text-[11px] font-bold uppercase tracking-widest"
-        style={{ color: chip.color, borderColor: chip.color }}
-      >
-        <span className="inline-block h-1.5 w-1.5" style={{ background: chip.color }} />
-        {chip.label}
-      </span>
-      <p className="text-xs text-smoke">{chip.explain}</p>
-    </div>
+    <span
+      className="inline-flex w-fit shrink-0 items-center gap-1.5 border px-2 py-0.5 font-mono text-[10px] font-bold tracking-widest uppercase"
+      style={{ color: chip.color, borderColor: chip.color }}
+    >
+      <span className="inline-block h-1.5 w-1.5" style={{ background: chip.color }} />
+      {chip.label}
+    </span>
   )
+}
+
+/** The plain sentence. Required wherever a chip appears; the chip is shorthand,
+ * never a substitute for saying what the status actually means. */
+export function StatusExplain({ status }: { status: NonNullable<ProjectStatus> }) {
+  return <p className="text-xs text-smoke">{CHIP[status].explain}</p>
 }
