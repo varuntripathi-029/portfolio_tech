@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { useCarStore } from '../state/carStore'
+import { frameAt } from '../track/trackFrame'
 
 /**
  * Measured by decoding the HDRI directly (azimuth 36.0deg off +Z, elevation
@@ -30,13 +31,18 @@ export function Lighting() {
   }, [target])
 
   useFrame(() => {
-    const z = useCarStore.getState().z
+    // The car now moves in both X and Z, so the shadow frustum has to follow
+    // its world position rather than a distance down a straight.
+    const { s, d } = useCarStore.getState()
+    const fr = frameAt(s)
+    const cx = fr.x + fr.lx * d
+    const cz = fr.z + fr.lz * d
     light.current.position.set(
-      SUN_DIRECTION.x * LIGHT_DISTANCE,
+      cx + SUN_DIRECTION.x * LIGHT_DISTANCE,
       SUN_DIRECTION.y * LIGHT_DISTANCE,
-      z + SUN_DIRECTION.z * LIGHT_DISTANCE,
+      cz + SUN_DIRECTION.z * LIGHT_DISTANCE,
     )
-    target.position.set(0, 0, z)
+    target.position.set(cx, 0, cz)
     // The target lives outside the scene graph, so it needs its own matrix
     // refresh; the renderer only auto-updates objects it owns.
     target.updateMatrixWorld()
