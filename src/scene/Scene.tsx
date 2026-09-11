@@ -6,9 +6,6 @@ import { Ground } from './Ground'
 import { RoadMarkings } from './RoadMarkings'
 import { Barriers } from './Barriers'
 import { LedBoards } from './LedBoards'
-import { YearSigns } from './YearSigns'
-import { EventBillboards } from './EventBillboards'
-import { FuelBoard } from './FuelBoard'
 import { GantryBridges } from './GantryBridges'
 import { LightPoles } from './LightPoles'
 import { MarshalPosts } from './MarshalPosts'
@@ -16,6 +13,21 @@ import { Grandstands } from './Grandstands'
 import { Lighting } from './Lighting'
 import { Car } from './Car'
 import { ChaseCam } from './ChaseCam'
+import { VerifyBridge } from './VerifyBridge'
+
+/**
+ * `r3f-perf`'s GPU-time readback (`EXT_disjoint_timer_query`) forces a
+ * CPU-GPU sync every frame. Under headless Chromium's SwiftShader software
+ * rendering that sync stalls hard enough to starve the page's own
+ * `setTimeout` queue almost completely: a bare recursive `setTimeout` chain
+ * that fires 8 times a second on a blank page fired ZERO times in 3.5s on
+ * this scene with Perf mounted. Confirmed by disabling Perf and re-running
+ * the same chain, which then fired on schedule. `scripts/verify.ts` appends
+ * `?noperf=1` so Playwright runs never hit this; a real visitor never passes
+ * that flag and never mounts DEV-only Perf regardless.
+ */
+const SKIP_PERF =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('noperf')
 
 export function Scene() {
   return (
@@ -44,9 +56,6 @@ export function Scene() {
         <RoadMarkings />
         <Barriers />
         <LedBoards />
-        <YearSigns />
-        <EventBillboards />
-        <FuelBoard />
         <GantryBridges />
         <LightPoles />
         <MarshalPosts />
@@ -56,7 +65,8 @@ export function Scene() {
 
       <ChaseCam />
 
-      {import.meta.env.DEV && <Perf position="bottom-left" />}
+      {import.meta.env.DEV && !SKIP_PERF && <Perf position="bottom-left" />}
+      {import.meta.env.DEV && <VerifyBridge />}
     </Canvas>
   )
 }

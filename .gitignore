@@ -3,3 +3,9 @@ dist
 .DS_Store
 *.local
 *.tsbuildinfo
+
+# Build notes are working documents, not deliverables. README.md stays tracked.
+*_NOTES.md
+
+# Playwright screenshots from scripts/verify.ts: per-run QA output, not an asset.
+verify/

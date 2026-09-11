@@ -9,6 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/titillium-web": "^5.3.0",
     "@react-three/drei": "^10.0.0",
     "@react-three/fiber": "^9.0.0",
     "gsap": "^3.15.0",
@@ -26,10 +28,13 @@
     "@types/react-dom": "^19.0.0",
     "@types/three": "^0.180.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "ffmpeg-static": "^5.3.0",
     "jpeg-js": "^0.4.4",
+    "playwright": "^1.63.0",
     "pngjs": "^7.0.0",
     "r3f-perf": "^7.2.3",
     "tailwindcss": "^4.0.0",
+    "tsx": "^4.23.13",
     "typescript": "^5.7.2",
     "vite": "^6.0.0"
   }
