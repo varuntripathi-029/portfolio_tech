@@ -1,14 +1,20 @@
 import { useLayoutEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
-import { BARRIER_X, TRACK_LENGTH } from './trackLayout'
+import { MARSHAL_POSTS } from '../track/props'
+import { frameAt } from '../track/trackFrame'
 
-// Positive X reads as the driver's left in the forward-facing chase cam
-// (verified visually), matching the spec's "Left Side" placement.
-const POST_X = BARRIER_X + 2
-const SPACING = 300
 const BOOTH_SIZE = 0.8
 
+/**
+ * Bakes a flat colour into a geometry as vertex colours, so the booth and its
+ * orange panel merge into one draw call.
+ *
+ * This is the one legitimate use of `vertexColors: true` in the project, because
+ * the attribute really exists here. It must never coexist with `setColorAt` on
+ * the same mesh: three multiplies the vertex colour in before the instance
+ * colour, which would zero every instance to black.
+ */
 function withColor(geometry: THREE.BufferGeometry, color: THREE.Color): THREE.BufferGeometry {
   const count = geometry.attributes.position.count
   const colors = new Float32Array(count * 3)
@@ -17,44 +23,52 @@ function withColor(geometry: THREE.BufferGeometry, color: THREE.Color): THREE.Bu
   return geometry
 }
 
-/** Booth + flat orange panel, baked as vertex colours so both merge into one draw call. */
 function buildMarshalGeometry(): THREE.BufferGeometry {
   const booth = new THREE.BoxGeometry(BOOTH_SIZE, BOOTH_SIZE, BOOTH_SIZE)
   booth.translate(0, BOOTH_SIZE / 2, 0)
   withColor(booth, new THREE.Color('#3a3a42'))
 
   const panel = new THREE.PlaneGeometry(BOOTH_SIZE * 0.8, BOOTH_SIZE * 0.5)
-  panel.rotateY(Math.PI / 2)
-  panel.translate(BOOTH_SIZE / 2 + 0.01, BOOTH_SIZE * 0.55, 0)
+  // Posts sit outside the loop and are oriented to the tangent, so the panel
+  // goes on the -left face to look back at the racing line.
+  panel.rotateY(-Math.PI / 2)
+  panel.translate(-BOOTH_SIZE / 2 - 0.01, BOOTH_SIZE * 0.55, 0)
   withColor(panel, new THREE.Color('#ff7a1a'))
 
   return mergeGeometries([booth, panel])
 }
 
-/** Small booth, orange flag panel is colour not emissive. Left side, occasional. */
+/** Small booth, orange flag panel as colour not emissive. Outside the loop. */
 export function MarshalPosts() {
   const ref = useRef<THREE.InstancedMesh>(null!)
   const geometry = useMemo(buildMarshalGeometry, [])
   const material = useMemo(
-    () => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, side: THREE.DoubleSide }),
+    () =>
+      new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 1,
+        side: THREE.DoubleSide,
+      }),
     [],
   )
 
-  const zPositions = useMemo(() => {
-    const arr: number[] = []
-    for (let z = SPACING / 2; z < TRACK_LENGTH; z += SPACING) arr.push(z)
-    return arr
-  }, [])
-
   useLayoutEffect(() => {
     const dummy = new THREE.Object3D()
-    zPositions.forEach((z, i) => {
-      dummy.position.set(POST_X, 0, z)
+    MARSHAL_POSTS.forEach((p, i) => {
+      const fr = frameAt(p.s)
+      dummy.position.set(fr.x + fr.lx * p.d, 0, fr.z + fr.lz * p.d)
+      dummy.rotation.set(0, Math.atan2(fr.tx, fr.tz), 0)
       dummy.updateMatrix()
       ref.current.setMatrixAt(i, dummy.matrix)
     })
     ref.current.instanceMatrix.needsUpdate = true
-  }, [zPositions])
+  }, [])
 
-  return <instancedMesh ref={ref} args={[geometry, material, zPositions.length]} raycast={() => null} />
+  return (
+    <instancedMesh
+      ref={ref}
+      args={[geometry, material, MARSHAL_POSTS.length]}
+      raycast={() => null}
+    />
+  )
 }

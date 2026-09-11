@@ -1,62 +1,62 @@
 import { useLayoutEffect, useMemo, useRef } from 'react'
 import * as THREE from 'three'
-import { BARRIER_X, TRACK_LENGTH } from './trackLayout'
+import { BARRIERS, BARRIER_STEP } from '../track/props'
+import { frameAt } from '../track/trackFrame'
 
-const SEGMENT_LENGTH = 4
 const SEGMENT_GAP = 0.2
 const SEGMENT_WIDTH = 0.5
 const SEGMENT_HEIGHT = 1
-const COUNT = Math.floor(TRACK_LENGTH / SEGMENT_LENGTH)
 
 const WHITE = new THREE.Color('#e8e8e4')
 const RED = new THREE.Color('#c81414')
 
 const dummy = new THREE.Object3D()
 
-/** One TecPro barrier line, alternating white/red segments via instanceColor. */
-function BarrierLine({ x }: { x: number }) {
+/**
+ * TecPro barrier lines, both sides, alternating white and red.
+ *
+ * Short segments rather than one long wall: on the outside of a corner a long
+ * segment leaves a visible gap at each joint, and at this length the chord
+ * across the tightest radius deviates by under two centimetres.
+ *
+ * No vertexColors here. That flag reads a per-vertex `color` geometry attribute
+ * which BoxGeometry does not have, an unbound one reads as (0,0,0), and three
+ * multiplies vColor by it BEFORE applying the instance colour, zeroing every
+ * segment to black. setColorAt enables instance colouring on its own.
+ */
+export function Barriers() {
   const ref = useRef<THREE.InstancedMesh>(null!)
   const geometry = useMemo(
-    () => new THREE.BoxGeometry(SEGMENT_WIDTH, SEGMENT_HEIGHT, SEGMENT_LENGTH - SEGMENT_GAP),
+    () => new THREE.BoxGeometry(SEGMENT_WIDTH, SEGMENT_HEIGHT, BARRIER_STEP - SEGMENT_GAP),
     [],
   )
-  // No vertexColors here: that flag reads a per-vertex `color` geometry
-  // attribute (USE_COLOR), which BoxGeometry doesn't have. An unbound
-  // attribute reads as (0,0,0), and vColor *= color runs before the
-  // instance colour is applied, zeroing every segment to black regardless
-  // of instanceColor. setColorAt enables USE_INSTANCING_COLOR on its own.
   const material = useMemo(
     () => new THREE.MeshStandardMaterial({ roughness: 1, envMapIntensity: 0.3 }),
     [],
   )
 
   useLayoutEffect(() => {
-    for (let i = 0; i < COUNT; i++) {
-      dummy.position.set(x, SEGMENT_HEIGHT / 2, i * SEGMENT_LENGTH + SEGMENT_LENGTH / 2)
+    BARRIERS.forEach((p, i) => {
+      const fr = frameAt(p.s)
+      dummy.position.set(fr.x + fr.lx * p.d, SEGMENT_HEIGHT / 2, fr.z + fr.lz * p.d)
+      dummy.rotation.set(0, Math.atan2(fr.tx, fr.tz), 0)
       dummy.updateMatrix()
       ref.current.setMatrixAt(i, dummy.matrix)
-      ref.current.setColorAt(i, i % 2 === 0 ? WHITE : RED)
-    }
+      // Both sides are written in the same pass, so step the colour every two
+      // instances to keep the stripes in phase across the track.
+      ref.current.setColorAt(i, i % 4 < 2 ? WHITE : RED)
+    })
     ref.current.instanceMatrix.needsUpdate = true
     if (ref.current.instanceColor) ref.current.instanceColor.needsUpdate = true
-  }, [x])
+  }, [])
 
   return (
     <instancedMesh
       ref={ref}
-      args={[geometry, material, COUNT]}
+      args={[geometry, material, BARRIERS.length]}
       castShadow={false}
       receiveShadow={false}
       raycast={() => null}
     />
-  )
-}
-
-export function Barriers() {
-  return (
-    <>
-      <BarrierLine x={-BARRIER_X} />
-      <BarrierLine x={BARRIER_X} />
-    </>
   )
 }

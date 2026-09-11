@@ -137,11 +137,22 @@ export function makeLedAtlas(): THREE.CanvasTexture {
   // The webfont is very likely still loading at boot, so the first paint would
   // land in a fallback face. Repaint once it is ready; the texture object is
   // unchanged, so nothing downstream needs to know.
+  //
+  // `document.fonts.ready` is not enough. Self-hosted faces are only fetched
+  // once something on the page actually asks for them, and nothing in the DOM
+  // renders Titillium at 700 — so `ready` can resolve before the bold face has
+  // even been requested, and the repaint lands in a synthetic-bold fallback.
+  // Loading the exact face we paint with forces the fetch and waits for it.
   if (typeof document !== 'undefined' && document.fonts) {
-    document.fonts.ready.then(() => {
-      paint(ctx)
-      texture.needsUpdate = true
-    })
+    document.fonts
+      .load(`700 48px "Titillium Web"`)
+      .then(() => {
+        paint(ctx)
+        texture.needsUpdate = true
+      })
+      .catch(() => {
+        /* fallback face already painted; nothing to recover */
+      })
   }
 
   return texture
