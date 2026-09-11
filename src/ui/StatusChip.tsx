@@ -1,4 +1,10 @@
-import type { ProjectStatus } from '../data/timeline'
+/**
+ * Deployment status of a project.
+ *
+ * Lived in the deleted timeline module in v1. It belongs with the chip that
+ * renders it until Stage 4 gives the projects their own data file.
+ */
+export type ProjectStatus = 'LIVE' | 'ARCHIVED' | 'BACKEND' | 'MOBILE' | null
 
 // Chip colour and race-control label from the spec's status table. The
 // explanation line is separate and mandatory; the chip alone never carries

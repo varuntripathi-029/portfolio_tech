@@ -1,19 +1,44 @@
 import { useEffect, useState } from 'react'
 import { motion, useReducedMotion } from 'motion/react'
 import { Panel, panelItem } from './Panel'
+import { useRaceStore } from '../state/raceStore'
 
 const LIGHT_INTERVAL = 550
 
-/** 3-2-1 red lights, illuminate in sequence then go dark together. Replays every lap. */
+/**
+ * 3-2-1 red lights, illuminate in sequence then go dark together.
+ *
+ * Only ever runs during the 'launching' phase, which is timed to
+ * `LAUNCH_DURATION` (2.2s) in Car.tsx and drives the camera orbit in
+ * ChaseCam.tsx. Idle (all dark) any other time, so it is ready to replay
+ * clean on the next lap.
+ */
 function StartLights() {
+  const phase = useRaceStore((s) => s.phase)
   const [lit, setLit] = useState(0) // 0..3 lit, -1 = lights out
 
   useEffect(() => {
-    if (lit === -1) return
-    const delay = lit >= 3 ? 500 : LIGHT_INTERVAL
-    const t = setTimeout(() => setLit((c) => (c >= 3 ? -1 : c + 1)), delay)
-    return () => clearTimeout(t)
-  }, [lit])
+    if (phase !== 'launching') {
+      setLit(0)
+      return
+    }
+    let cancelled = false
+    let n = 0
+    setLit(0)
+    const tick = () => {
+      const delay = n >= 3 ? 500 : LIGHT_INTERVAL
+      window.setTimeout(() => {
+        if (cancelled) return
+        n += 1
+        setLit(n >= 4 ? -1 : n)
+        if (n < 4) tick()
+      }, delay)
+    }
+    tick()
+    return () => {
+      cancelled = true
+    }
+  }, [phase])
 
   return (
     <div className="flex gap-3">
@@ -51,7 +76,7 @@ function DriverStats() {
   const reduce = useReducedMotion()
 
   return (
-    <Panel headerLeft="Driver" className="w-[340px] shrink-0">
+    <Panel headerLeft="Driver" className="w-full">
       <div className="space-y-4">
         {STATS.map((s) => (
           <motion.div key={s.label} variants={panelItem}>
@@ -94,7 +119,7 @@ function CarSpecification() {
           RC-12
         </span>
       }
-      className="w-[520px] max-w-full"
+      className="w-full"
     >
       <div className="grid grid-cols-2 gap-x-7 gap-y-4">
         {SPEC_GROUPS.map((g) => (
@@ -109,36 +134,47 @@ function CarSpecification() {
         className="mt-5 space-y-1 border-t border-slate pt-4 font-mono text-xs text-smoke"
       >
         <p className="tabular">B.Tech ECE (IoT), IIIT Nagpur. 2023 to 2027.</p>
-        <p className="tabular">LeetCode Knight, rating 1886. 300+ problems. 30+ public repos.</p>
+        <p className="tabular">LeetCode Knight, rating 1886. 300+ problems. 40+ public repos.</p>
       </motion.div>
     </Panel>
   )
 }
 
 /**
- * Grid, lights, and the driver profile. Reachable on every lap (see
- * raceStore.reset()), so this is the profile page, not a loading splash.
+ * The DRIVER profile, anchored to one side of the screen so it never covers
+ * the car: the load camera sits in front at a 3/4 angle specifically so the
+ * car and this card can share the frame (spec 7.1).
+ *
+ * Shown only until the first W: `driverSeen` then keeps it off the grid for
+ * every later lap, while the lights themselves (`StartLights`, above) still
+ * replay every time. The navbar's DRIVER row is how the profile is reached
+ * again after that.
  */
 export function StartSequence() {
+  const driverSeen = useRaceStore((s) => s.driverSeen)
+  const phase = useRaceStore((s) => s.phase)
+
   return (
-    <div className="fixed inset-0 z-30 flex flex-col items-center gap-8 overflow-y-auto bg-carbon/80 px-6 pt-28 pb-10 backdrop-blur-[3px]">
-      <div>
-        <p className="text-center font-mono text-xs tracking-[0.3em] text-smoke uppercase">
-          Varun Tripathi
-        </p>
-        <h1 className="mt-1 text-center text-4xl font-black tracking-tight text-paper uppercase">
-          Race Engineer
-        </h1>
+    <div className="pointer-events-none fixed inset-y-0 left-0 z-30 flex w-full items-center justify-start pt-16 pb-10 pl-6">
+      {!driverSeen && (
+        <div className="pointer-events-auto flex max-h-[80vh] w-[min(520px,44vw)] flex-col gap-6 overflow-y-auto">
+          <div>
+            <p className="font-mono text-xs tracking-[0.3em] text-smoke uppercase">Varun Tripathi</p>
+            <h1 className="mt-1 text-3xl font-black tracking-tight text-paper uppercase">
+              Race Engineer
+            </h1>
+          </div>
+          <DriverStats />
+          <CarSpecification />
+        </div>
+      )}
+
+      <div className="pointer-events-auto fixed bottom-10 left-1/2 flex -translate-x-1/2 flex-col items-center gap-3">
+        <StartLights />
+        {phase === 'lights' && (
+          <p className="font-mono text-xs tracking-[0.2em] text-smoke uppercase">Press W to go</p>
+        )}
       </div>
-
-      <StartLights />
-
-      <div className="flex flex-wrap items-start justify-center gap-6">
-        <DriverStats />
-        <CarSpecification />
-      </div>
-
-      <p className="font-mono text-xs tracking-[0.2em] text-smoke uppercase">Press W to go</p>
     </div>
   )
 }

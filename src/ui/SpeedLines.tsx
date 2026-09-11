@@ -21,7 +21,7 @@ export function SpeedLines() {
       useCarStore.subscribe((state) => {
         const el = ref.current
         if (!el) return
-        const p = state.jumpProgress
+        const p = state.warpProgress
         el.style.opacity = p < 0 ? '0' : String(Math.sin(p * Math.PI) * 0.8)
       }),
     [],
