@@ -19,12 +19,15 @@ export function NavPill({
   label,
   open,
   onHover,
+  onFocus,
   onSelect,
   children,
 }: {
   label: string
   open: boolean
   onHover: () => void
+  /** Keyboard arrival. Separate from onHover because hover is intent-delayed. */
+  onFocus: () => void
   onSelect: () => void
   children?: React.ReactNode
 }) {
@@ -61,9 +64,9 @@ export function NavPill({
       type="button"
       aria-expanded={open}
       onMouseEnter={onHover}
-      onFocus={onHover}
+      onFocus={onFocus}
       onClick={onSelect}
-      className="chamfer-sm relative overflow-hidden border border-slate px-5 py-2 font-mono text-[11px] tracking-[0.18em] uppercase"
+      className="focus-ring chamfer-sm relative overflow-hidden border border-slate px-5 py-2 font-mono text-[11px] tracking-[0.18em] uppercase"
     >
       <span
         ref={circle}
