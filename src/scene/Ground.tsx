@@ -2,75 +2,62 @@ import { useMemo } from 'react'
 import { useTexture } from '@react-three/drei'
 import { useThree } from '@react-three/fiber'
 import * as THREE from 'three'
-import { BANDS, TRACK_LENGTH, type Band } from './trackLayout'
+import { BANDS, type Band } from './trackLayout'
 import { makeKerbTexture } from './kerbTexture'
+import { buildRibbon } from './ribbon'
+import { TRACK_LENGTH, frameAt } from '../track/trackFrame'
 
 /**
- * One long plane per surface band, mirrored to both sides. Blending four
- * surfaces in one shader costs four texture samples on every ground
- * fragment, and the ground fills most of the screen; separate planes cost
- * ~9 extra draw calls instead, far cheaper on integrated GPUs.
+ * One ribbon per surface band, swept along the circuit.
+ *
+ * v1 used one long plane per band, which a curve makes meaningless. What
+ * carries over is the reason for keeping the bands as separate meshes: four
+ * texture samples per ground fragment on a screen the ground mostly fills is
+ * far more expensive on an integrated GPU than about nine extra draw calls.
  */
-
-type Side = 0 | 1 | -1
-
-function bandGeometry(band: Band, side: Side) {
-  const width = side === 0 ? band.outer * 2 : band.outer - band.inner
-  const x = side === 0 ? 0 : side * (band.inner + (band.outer - band.inner) / 2)
-  return {
-    width,
-    x,
-    repeatX: width / band.tile,
-    repeatY: GROUND_LENGTH / band.tile,
-  }
-}
-
-/**
- * The chase cam sits 8m behind the car, so at the start line (z=0) it is
- * looking from z=-8. Ground that begins exactly at z=0 leaves the near field
- * rendering as bare sky. Overhang both ends so the world always extends past
- * the camera and past the final event.
- */
-const OVERHANG = 80
-const GROUND_LENGTH = TRACK_LENGTH + OVERHANG * 2
-
-function usePlaneGeometry(width: number, length: number) {
-  return useMemo(() => new THREE.PlaneGeometry(width, length), [width, length])
-}
 
 function useAnisotropy() {
   const gl = useThree((s) => s.gl)
   return Math.min(8, gl.capabilities.getMaxAnisotropy())
 }
 
-function KerbBand({ band, side }: { band: Band; side: Side }) {
-  const anisotropy = useAnisotropy()
-  const { width, x, repeatX, repeatY } = bandGeometry(band, side)
-  const geometry = usePlaneGeometry(width, GROUND_LENGTH)
-  const texture = useMemo(() => makeKerbTexture(), [])
+/** Bands starting at the centreline span both sides as one strip. */
+function edgesFor(band: Band, side: 1 | -1): { from: number; to: number } {
+  if (band.inner === 0) return { from: -band.outer, to: band.outer }
+  return { from: side * band.inner, to: side * band.outer }
+}
 
+function KerbBand({ band, side }: { band: Band; side: 1 | -1 }) {
+  const anisotropy = useAnisotropy()
+  const { from, to } = edgesFor(band, side)
+  const geometry = useMemo(
+    () => buildRibbon({ from, to, y: band.y, tile: band.tile }),
+    [from, to, band.y, band.tile],
+  )
   const material = useMemo(() => {
-    texture.repeat.set(repeatX, repeatY)
+    const texture = makeKerbTexture()
+    texture.wrapS = texture.wrapT = THREE.RepeatWrapping
     texture.anisotropy = anisotropy
     return new THREE.MeshStandardMaterial({ map: texture, roughness: 0.8, metalness: 0 })
-  }, [texture, repeatX, repeatY, anisotropy])
+  }, [anisotropy])
 
   return (
     <mesh
       geometry={geometry}
       material={material}
-      rotation-x={-Math.PI / 2}
-      position={[x, band.y, TRACK_LENGTH / 2]}
       receiveShadow={band.receiveShadow}
       raycast={() => null}
     />
   )
 }
 
-function SurfaceBand({ band, side }: { band: Band; side: Side }) {
+function SurfaceBand({ band, side }: { band: Band; side: 1 | -1 }) {
   const anisotropy = useAnisotropy()
-  const { width, x, repeatX, repeatY } = bandGeometry(band, side)
-  const geometry = usePlaneGeometry(width, GROUND_LENGTH)
+  const { from, to } = edgesFor(band, side)
+  const geometry = useMemo(
+    () => buildRibbon({ from, to, y: band.y, tile: band.tile }),
+    [from, to, band.y, band.tile],
+  )
 
   const { diff, nor, arm } = useTexture({
     diff: `/textures/${band.dir}/diff.jpg`,
@@ -81,7 +68,8 @@ function SurfaceBand({ band, side }: { band: Band; side: Side }) {
   const material = useMemo(() => {
     for (const tex of [diff, nor, arm]) {
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping
-      tex.repeat.set(repeatX, repeatY)
+      // The ribbon bakes tiling into its UVs, so the texture repeat stays 1:1.
+      tex.repeat.set(1, 1)
       tex.anisotropy = anisotropy
     }
     diff.colorSpace = THREE.SRGBColorSpace
@@ -96,36 +84,78 @@ function SurfaceBand({ band, side }: { band: Band; side: Side }) {
       roughness: 1,
       metalness: 1,
     })
-  }, [diff, nor, arm, repeatX, repeatY, anisotropy])
+  }, [diff, nor, arm, anisotropy])
 
   return (
     <mesh
       geometry={geometry}
       material={material}
-      rotation-x={-Math.PI / 2}
-      position={[x, band.y, TRACK_LENGTH / 2]}
       receiveShadow={band.receiveShadow}
       raycast={() => null}
     />
   )
 }
 
-function BandPlane({ band, side }: { band: Band; side: Side }) {
+function BandRibbon({ band, side }: { band: Band; side: 1 | -1 }) {
   return band.dir ? <SurfaceBand band={band} side={side} /> : <KerbBand band={band} side={side} />
+}
+
+/**
+ * One flat plane under everything, so the infield and the far outfield are not
+ * a hole through to the sky. A closed circuit seen from any raised angle shows
+ * the middle of itself, which a straight track never did.
+ */
+function BasePlane() {
+  const { size, centre } = useMemo(() => {
+    let minX = Infinity
+    let maxX = -Infinity
+    let minZ = Infinity
+    let maxZ = -Infinity
+    for (let s = 0; s < TRACK_LENGTH; s += 8) {
+      const fr = frameAt(s)
+      minX = Math.min(minX, fr.x)
+      maxX = Math.max(maxX, fr.x)
+      minZ = Math.min(minZ, fr.z)
+      maxZ = Math.max(maxZ, fr.z)
+    }
+    // Generous margin so the horizon is ground, not an edge.
+    const margin = 900
+    return {
+      size: Math.max(maxX - minX, maxZ - minZ) + margin * 2,
+      centre: { x: (minX + maxX) / 2, z: (minZ + maxZ) / 2 },
+    }
+  }, [])
+
+  const geometry = useMemo(() => new THREE.PlaneGeometry(size, size), [size])
+  const material = useMemo(
+    // Matte and unlit-looking on purpose: this is a backdrop, and anything
+    // shinier competes with the surfaces that matter.
+    () => new THREE.MeshStandardMaterial({ color: '#2a3326', roughness: 1, metalness: 0 }),
+    [],
+  )
+
+  return (
+    <mesh
+      geometry={geometry}
+      material={material}
+      rotation-x={-Math.PI / 2}
+      position={[centre.x, -0.05, centre.z]}
+      raycast={() => null}
+    />
+  )
 }
 
 export function Ground() {
   return (
     <group>
+      <BasePlane />
       {BANDS.map((band) =>
-        // A band starting at the centreline is one plane spanning both
-        // sides; mirroring it into two halves would show a seam down the middle.
         band.inner === 0 ? (
-          <BandPlane key={band.id} band={band} side={0} />
+          <BandRibbon key={band.id} band={band} side={1} />
         ) : (
           <group key={band.id}>
-            <BandPlane band={band} side={1} />
-            <BandPlane band={band} side={-1} />
+            <BandRibbon band={band} side={1} />
+            <BandRibbon band={band} side={-1} />
           </group>
         ),
       )}

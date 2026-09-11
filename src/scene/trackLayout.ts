@@ -1,9 +1,9 @@
 /**
  * Track cross-section. Units are metres, measured outward from the
- * centreline (x = 0), mirrored to both sides. The car drives along +Z.
+ * centreline of the curve (lateral offset d = 0), mirrored to both sides.
  *
  * Widths are deliberately compressed from real F1 run-off (15-30m) to
- * keep the LED boards and signboards (later phases) inside camera frame.
+ * keep the LED boards and section boards inside camera frame.
  * Do not "correct" these to realistic values.
  *
  *    0 --- 6      TRACK    asphalt_track       tile 4m   receives shadow
@@ -11,10 +11,12 @@
  *    7 --- 10     RUNOFF   concrete_pavement   tile 4m
  *   10 --- 13     GRAVEL   gravel_floor_02     tile 3m
  *   13 --- 17     GRASS    sparse_grass        tile 2m
- *          17     BARRIER  TecPro line (later phase)
+ *          17     BARRIER  TecPro line
+ *
+ * This file stays a leaf: constants only, no curve maths, no imports. The
+ * arc-length table in src/track imports it, so it must not import back.
  */
 
-export const TRACK_LENGTH = 2400
 export const BARRIER_X = 17
 
 export type BandId = 'track' | 'kerb' | 'runoff' | 'gravel' | 'grass'
@@ -43,26 +45,14 @@ export const BANDS: Band[] = [
   { id: 'grass', inner: 13, outer: 17, tile: 2, dir: 'sparse_grass', receiveShadow: false, y: 0.008 },
 ]
 
-/**
- * Pit lane branches off within the runoff band at every timeline event
- * (see src/data/timeline.ts for the trackZ values). Cross-section only;
- * per-event z-ranges are derived from PIT_ENTRY_LEAD / PIT_EXIT_LEAD around
- * each event's trackZ, not stored here.
- */
-export const PIT_LANE = {
-  dir: 'asphalt_pit_lane',
-  tile: 4,
-  inner: 7,
-  outer: 10,
-  // Negative world X reads as the driver's right in the forward-facing
-  // chase cam (verified visually), which is where the pit lane branches.
-  side: -1 as const,
-  y: 0.005,
+export function bandById(id: BandId): Band {
+  const found = BANDS.find((b) => b.id === id)
+  if (!found) throw new Error(`trackLayout: no band "${id}"`)
+  return found
 }
 
-/** Metres before an event's trackZ where the car starts decelerating in. */
-export const PIT_ENTRY_LEAD = 60
-/** Metres after trackZ before the car is fully back on the racing line. */
-export const PIT_EXIT_LEAD = 40
-/** Lateral offset (world X) of the pit bay, centred in the pit lane band. */
-export const PIT_BAY_X = PIT_LANE.side * (PIT_LANE.inner + (PIT_LANE.outer - PIT_LANE.inner) / 2)
+/** Half the track surface width, so d in [-TRACK_HALF, TRACK_HALF] is asphalt. */
+export const TRACK_HALF = bandById('track').outer
+/** Inner and outer edges of the kerb, which is what the rumble tests against. */
+export const KERB_INNER = bandById('kerb').inner
+export const KERB_OUTER = bandById('kerb').outer
