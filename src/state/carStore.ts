@@ -1,30 +1,46 @@
 import { create } from 'zustand'
 
 /**
- * Car position and speed, read every frame by the camera, lighting, and
- * wheel rotation. Plain getState() reads in useFrame, not the store hook,
- * so none of those subscribers re-render on every physics tick.
+ * The car state the rest of the app reads.
+ *
+ * Mirrored out of the sim every frame by Car.tsx. Read it with `getState()` in
+ * per-frame code and never subscribe there: a React re-render at 60fps for a
+ * speed readout is the easiest way to lose the frame budget in a project like
+ * this. The HUD subscribes imperatively and writes to refs instead.
  */
 interface CarState {
-  z: number
-  x: number
-  speed: number
+  /** Arc length along the lap, metres. */
+  s: number
+  /** Lateral offset from the racing line. Positive is the driver left. */
+  d: number
+  /** Forward speed, m/s. */
+  v: number
+  gear: number
+  rpm: number
+  /** 1 at the line, 0 at the CONTACT marker. */
+  fuel: number
+  /** True while a brake is applied, for the brake lights. */
+  braking: boolean
   /**
-   * 0 to 1 while a navbar jump is running, -1 otherwise. The camera reads it
-   * to snap instead of lerp and to punch the FOV, and the DOM speed-line
-   * overlay reads it for opacity. Kept here rather than in raceStore because
-   * it changes every frame and nothing should re-render on it.
+   * 0 to 1 while a navbar warp is running, -1 otherwise.
+   *
+   * Kept here rather than in raceStore because it changes every frame and
+   * nothing should re-render on it.
    */
-  jumpProgress: number
-  set: (z: number, speed: number, x: number) => void
-  setJumpProgress: (p: number) => void
+  warpProgress: number
+  set: (next: Partial<CarState>) => void
+  setWarpProgress: (warpProgress: number) => void
 }
 
 export const useCarStore = create<CarState>((set) => ({
-  z: 0,
-  x: 0,
-  speed: 0,
-  jumpProgress: -1,
-  set: (z, speed, x) => set({ z, speed, x }),
-  setJumpProgress: (jumpProgress) => set({ jumpProgress }),
+  s: 0,
+  d: 0,
+  v: 0,
+  gear: 0,
+  rpm: 0,
+  fuel: 1,
+  braking: false,
+  warpProgress: -1,
+  set: (next) => set(next),
+  setWarpProgress: (warpProgress) => set({ warpProgress }),
 }))
