@@ -16,10 +16,18 @@ import { useFrame, useThree } from '@react-three/fiber'
  */
 export function VerifyBridge() {
   const gl = useThree((s) => s.gl)
+  const scene = useThree((s) => s.scene)
 
   useEffect(() => {
     ;(window as unknown as { __renderer: typeof gl }).__renderer = gl
   }, [gl])
+
+  // Scene-graph access for one-off diagnostics (e.g. confirming a named
+  // object's world position or material state) without fighting the chase
+  // camera for a screenshot angle.
+  useEffect(() => {
+    ;(window as unknown as { __scene: typeof scene }).__scene = scene
+  }, [scene])
 
   // A plain counter read twice across a wall-clock gap (see verify.ts's
   // fps()) gives an accurate in-page frame rate from two cheap round trips,

@@ -8,7 +8,7 @@
  * lap is too slow, a stop misses its marker, or a geometry assertion fails.
  */
 
-import { TRACK_LENGTH, curvatureAt, frameAt } from '../src/track/trackFrame'
+import { TRACK_LENGTH, curvatureAt, frameAt, wrapS } from '../src/track/trackFrame'
 import { assertCircuit, assertPropClearance, assertPropsOutside } from '../src/track/assertions'
 import { collectProps, collectOutsideProps } from '../src/track/props'
 import { SECTIONS, BRAKING_STOPS } from '../src/data/sections'
@@ -18,6 +18,8 @@ import {
   stepCar,
   cornerSpeed,
   TOP_SPEED,
+  REVERSE_TOP_SPEED,
+  REVERSE_GEAR,
   type CarInput,
 } from '../src/sim/car'
 import { STEER_LIMIT, RUMBLE_D } from '../src/sim/carSpec'
@@ -76,6 +78,7 @@ console.log('\nacceleration')
     steer: 0,
     targetS: null,
     steerEnabled: false,
+    handbrake: false,
   }
   let t = 0
   let to100 = -1
@@ -151,6 +154,7 @@ while (stopIndex < order.length && simTime < SIM_LIMIT) {
     steer: 0,
     targetS: target.s,
     steerEnabled: false,
+    handbrake: false,
   }
   const { arrived } = stepCar(car, input, DT, track)
   t += DT
@@ -197,6 +201,7 @@ if (stopIndex < order.length) {
     steer: 0,
     targetS: null,
     steerEnabled: false,
+    handbrake: false,
   }
   const startS = car.s
   while (car.s >= startS && simTime < SIM_LIMIT) {
@@ -248,6 +253,7 @@ console.log('\nundersteer, flat out with no lift')
     steer: 0,
     targetS: null,
     steerEnabled: true,
+    handbrake: false,
   }
   let time = 0
   let maxDrift = 0
@@ -274,6 +280,247 @@ console.log('\nundersteer, flat out with no lift')
         'unreachable and the lift corner has no consequence',
     )
   }
+}
+
+// --- drift-heavy run (Block F): confirm the steer limit still holds, and
+// report the time cost of drifting every corner rather than gripping it ---
+//
+// The "grip lap" above steers not at all (pure understeer plus a lift before
+// the one corner that needs it), so it is not a fair baseline for isolating
+// what drifting itself costs: active steering into a corner is simply a
+// different, more capable line regardless of the handbrake. Instead this
+// drives the SAME steer-hard-into-every-corner style twice, once with the
+// handbrake and once without, so the only variable between the two runs is
+// drifting itself.
+
+function driveOneLap(withHandbrake: boolean) {
+  const dcar = createCarState(0)
+  let time = 0
+  let maxAbsD = 0
+  let maxSlip = 0
+  let breached = false
+  const startTravelled = dcar.travelled
+  while (dcar.travelled - startTravelled < TRACK_LENGTH && time < SIM_LIMIT) {
+    const curvature = curvatureAt(dcar.s)
+    const cornering = Math.abs(curvature) > 1e-4
+    const input: CarInput = {
+      throttle: true,
+      brake: false,
+      steer: cornering ? Math.sign(curvature) : 0,
+      targetS: null,
+      steerEnabled: true,
+      handbrake: withHandbrake && cornering,
+    }
+    stepCar(dcar, input, DT, track)
+    time += DT
+    maxAbsD = Math.max(maxAbsD, Math.abs(dcar.d))
+    maxSlip = Math.max(maxSlip, Math.abs(dcar.slipAngle))
+    if (Math.abs(dcar.d) > STEER_LIMIT + 1e-6) breached = true
+  }
+  return { time, maxAbsD, maxSlip, breached }
+}
+
+console.log('\ndrift-heavy lap')
+{
+  const withDrift = driveOneLap(true)
+  const withoutDrift = driveOneLap(false)
+  console.log(`  same line, handbrake off   ${withoutDrift.time.toFixed(2)}s`)
+  console.log(
+    `  same line, handbrake on    ${withDrift.time.toFixed(2)}s   ` +
+      `(drifting costs ${(withDrift.time - withoutDrift.time).toFixed(2)}s over the lap)`,
+  )
+  console.log(`  max |d| reached            ${withDrift.maxAbsD.toFixed(2)}m of ${STEER_LIMIT.toFixed(2)}m available`)
+  console.log(`  max slip angle             ${withDrift.maxSlip.toFixed(1)} deg`)
+  if (withDrift.breached) {
+    fail('drifting pushed the car past STEER_LIMIT: a drift left the track')
+  }
+  if (withDrift.time <= withoutDrift.time) {
+    fail('drifting was not slower than the identical line without it: it is a shortcut, not style')
+  }
+}
+
+// --- sustained slide through every named corner (Block G): initiate with a
+// lift, sustain under throttle the whole way through, and confirm the car
+// loses under 25% of its corner-entry speed doing it ---
+
+console.log('\nsustained slide per corner')
+{
+  const designTotal = RESOLVED.reduce((a, r) => a + r.length, 0)
+  const toMeasured = TRACK_LENGTH / designTotal
+  const corners = RESOLVED.filter((r) => r.kind === 'arc')
+  let worstLossPct = 0
+
+  for (const corner of corners) {
+    const startS = corner.start * toMeasured
+    const lengthS = corner.length * toMeasured
+    // A comparable "entered hot" speed for every corner: 25% over its own
+    // grip limit, which is exactly the kind of entry that needs a slide
+    // rather than a lift to get through clean.
+    const limit = cornerSpeed(1 / corner.radius)
+    const car = createCarState(wrapS(startS))
+    car.v = Math.min(TOP_SPEED, limit * 1.25)
+    const entrySpeed = car.v
+    const steer = corner.turn >= 0 ? 1 : -1
+
+    // Initiate with a brief lift-and-steer, then sustain under throttle for
+    // the rest of the corner's own length (not a step beyond it, or an
+    // accelerating slide would keep gaining speed past the exit and the
+    // comparison would stop meaning anything).
+    let traversed = 0
+    let t = 0
+    while (traversed < lengthS && t < 15) {
+      const initiating = t < 0.4
+      const cmd: CarInput = {
+        throttle: !initiating,
+        brake: false,
+        steer,
+        targetS: null,
+        steerEnabled: true,
+        handbrake: false,
+      }
+      stepCar(car, cmd, DT, track)
+      traversed += car.v * DT
+      t += DT
+    }
+    const exitSpeed = car.v
+    const lossPct = Math.max(0, (1 - exitSpeed / entrySpeed) * 100)
+    worstLossPct = Math.max(worstLossPct, lossPct)
+    console.log(
+      `  ${corner.id.padEnd(14)} entry ${(entrySpeed * 3.6).toFixed(0)} km/h -> ` +
+        `exit ${(exitSpeed * 3.6).toFixed(0)} km/h (${lossPct.toFixed(1)}% lost), ` +
+        `reached ${car.driftPhase}`,
+    )
+    if (lossPct >= 25) {
+      fail(`sustained slide through "${corner.id}" lost ${lossPct.toFixed(1)}% of entry speed, over the 25% limit`)
+    }
+  }
+  console.log(`  worst speed loss across all corners: ${worstLossPct.toFixed(1)}%`)
+}
+
+// --- reverse gear (Block F / F5): engagement timing, top speed, and the
+// four invariants the forward-only code assumed ---
+
+console.log('\nreverse gear')
+{
+  const rcar = createCarState(50) // start a little way into the lap, away from s=0
+  const holdBrake: CarInput = {
+    throttle: false,
+    brake: true,
+    steer: 0,
+    targetS: null,
+    steerEnabled: true,
+    handbrake: false,
+  }
+
+  // 1. Engagement timing: brake to a stop, then hold S. Reverse must not
+  // engage before REVERSE_ENGAGE_TIME (0.3s), and must engage shortly after.
+  let t = 0
+  while (rcar.v > 0.05 && t < 20) {
+    stepCar(rcar, holdBrake, DT, track)
+    t += DT
+  }
+  let engagedAt = -1
+  t = 0
+  while (t < 1 && engagedAt < 0) {
+    stepCar(rcar, holdBrake, DT, track)
+    t += DT
+    if (rcar.reversing) engagedAt = t
+  }
+  console.log(`  reverse engaged after   ${engagedAt.toFixed(2)}s of holding S stationary (target ~0.3)`)
+  if (engagedAt < 0.25 || engagedAt > 0.45) {
+    fail(`reverse engaged at ${engagedAt.toFixed(2)}s, expected close to the 0.3s hold`)
+  }
+
+  // 2. Top speed cap: hold S (the reverse "gas") and confirm it never
+  // exceeds REVERSE_TOP_SPEED.
+  let maxReverseSpeed = 0
+  t = 0
+  while (t < 15) {
+    stepCar(rcar, holdBrake, DT, track)
+    t += DT
+    maxReverseSpeed = Math.max(maxReverseSpeed, rcar.v)
+  }
+  console.log(
+    `  reverse top speed       ${(maxReverseSpeed * 3.6).toFixed(1)} km/h ` +
+      `(cap ${(REVERSE_TOP_SPEED * 3.6).toFixed(1)})`,
+  )
+  if (maxReverseSpeed > REVERSE_TOP_SPEED + 0.01) {
+    fail(`reverse exceeded its top speed cap: ${(maxReverseSpeed * 3.6).toFixed(1)} km/h`)
+  }
+  if (rcar.gear !== REVERSE_GEAR) fail('gear did not read as REVERSE_GEAR while reversing')
+
+  // Invariant 1 & 2: reversing back across the start/finish line must not
+  // fire an arrival even when fed a real target -- the sim's own arrival
+  // snap must refuse to fire while `state.reversing` is true, not just rely
+  // on Car.tsx never handing it a target during reverse. This is the
+  // stronger, sim-level version of "only a forward crossing ends anything".
+  // Fresh car, parked right next to the line, so a short reverse run is
+  // guaranteed to wrap it rather than depending on how far the earlier
+  // engagement/top-speed checks happened to travel.
+  const lcar = createCarState(5)
+  // Engagement itself requires targetS === null (reverse is a free-driving
+  // manoeuvre, never available with a stop armed), so engage first...
+  t = 0
+  while (t < 1 && !lcar.reversing) {
+    stepCar(lcar, holdBrake, DT, track)
+    t += DT
+  }
+  if (!lcar.reversing) fail('reverse never engaged for the line-crossing scenario, the rest of it is meaningless')
+  // ...then feed it a real target anyway, simulating the bug this invariant
+  // guards against (arming somehow left on into a reverse manoeuvre), and
+  // confirm the sim itself refuses to arrive on it while reversing.
+  const fedTarget: CarInput = { throttle: false, brake: true, steer: 0, targetS: 5, steerEnabled: true, handbrake: false }
+  let crossedLine = false
+  let arrivedWhileReversing = false
+  t = 0
+  while (t < 12) {
+    const { arrived } = stepCar(lcar, fedTarget, DT, track)
+    if (arrived) arrivedWhileReversing = true
+    if (lcar.s > TRACK_LENGTH - 20) crossedLine = true
+    t += DT
+  }
+  console.log(
+    `  reversed from s=5.0m to s=${lcar.s.toFixed(1)}m, ` +
+      `crossing the line backward: ${crossedLine ? 'yes' : 'no'}`,
+  )
+  if (!crossedLine) fail('the reverse-across-the-line scenario never actually reached the line')
+  if (arrivedWhileReversing) {
+    fail('stepCar fired an arrival while reversing, even with a target fed to it: invariant 1/2 broken')
+  }
+
+  // Invariant 3: fuel is monotonic. Drive forward a while (fuel falls),
+  // then reverse for a while, and confirm fuel never rises at any step.
+  const fcar = createCarState(0)
+  const driveForward: CarInput = {
+    throttle: true,
+    brake: false,
+    steer: 0,
+    targetS: null,
+    steerEnabled: true,
+    handbrake: false,
+  }
+  let lastFuel = fcar.fuel
+  let fuelRose = false
+  t = 0
+  while (t < 20) {
+    stepCar(fcar, driveForward, DT, track)
+    if (fcar.fuel > lastFuel + 1e-9) fuelRose = true
+    lastFuel = fcar.fuel
+    t += DT
+  }
+  const fuelAfterDriving = fcar.fuel
+  t = 0
+  while (t < 20) {
+    stepCar(fcar, holdBrake, DT, track) // brakes to a stop, then reverses
+    if (fcar.fuel > lastFuel + 1e-9) fuelRose = true
+    lastFuel = fcar.fuel
+    t += DT
+  }
+  console.log(
+    `  fuel after driving forward   ${fuelAfterDriving.toFixed(3)}, ` +
+      `after reversing ${fcar.fuel.toFixed(3)} (must not have risen)`,
+  )
+  if (fuelRose) fail('fuel rose at some step without an explicit refuel: invariant 3 broken')
 }
 
 if (lapTime > MAX_LAP) {

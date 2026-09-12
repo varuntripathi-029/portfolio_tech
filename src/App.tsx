@@ -5,6 +5,7 @@ import { assertCircuit, assertPropClearance, assertPropsOutside } from './track/
 import { collectProps, collectOutsideProps } from './track/props'
 import { useRaceStore } from './state/raceStore'
 import { SECTIONS, type SectionId } from './data/sections'
+import { contextState, currentGains } from './audio/engine'
 
 /**
  * The geometry checks run once at boot in dev.
@@ -35,12 +36,14 @@ function VerifyHooks() {
     const w = window as unknown as {
       __phase: () => string
       __warpTo: (id: SectionId) => void
+      __audio: () => { state: string; gains: ReturnType<typeof currentGains> }
     }
     w.__phase = () => useRaceStore.getState().phase
     w.__warpTo = (id) => {
       if (!SECTIONS.some((s) => s.id === id)) throw new Error(`verify: no section "${id}"`)
       useRaceStore.getState().requestWarp({ section: id })
     }
+    w.__audio = () => ({ state: contextState(), gains: currentGains() })
   }, [])
   return null
 }
