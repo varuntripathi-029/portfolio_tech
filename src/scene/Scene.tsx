@@ -10,10 +10,15 @@ import { GantryBridges } from './GantryBridges'
 import { LightPoles } from './LightPoles'
 import { MarshalPosts } from './MarshalPosts'
 import { Grandstands } from './Grandstands'
+import { Skyline } from './Skyline'
+import { StartGantry } from './StartGantry'
+import { SectionBoards } from './SectionBoards'
 import { Lighting } from './Lighting'
 import { Car } from './Car'
 import { ChaseCam } from './ChaseCam'
+import { DriftEffects } from './DriftEffects'
 import { VerifyBridge } from './VerifyBridge'
+import { useIsTouchDevice } from '../ui/useTouch'
 
 /**
  * `r3f-perf`'s GPU-time readback (`EXT_disjoint_timer_query`) forces a
@@ -30,10 +35,15 @@ const SKIP_PERF =
   typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('noperf')
 
 export function Scene() {
+  // Block G4: capped pixel ratio on touch, part of "lighter render" -- dpr 2
+  // on a high-density phone screen is 4x the fragment work of dpr 1.
+  const isTouch = useIsTouchDevice()
+
   return (
     <Canvas
       shadows
       camera={{ position: [0, 2.6, -8], fov: 55, near: 0.1, far: 3000 }}
+      dpr={isTouch ? [1, 1.5] : [1, 2]}
       // environmentIntensity only dims the lighting contribution.
       // backgroundIntensity is a separate property that defaults to 1, so the
       // visible sky stayed blown to white while the scene got darker.
@@ -60,7 +70,11 @@ export function Scene() {
         <LightPoles />
         <MarshalPosts />
         <Grandstands />
+        <Skyline />
+        <StartGantry />
+        <SectionBoards />
         <Car />
+        <DriftEffects />
       </Suspense>
 
       <ChaseCam />
