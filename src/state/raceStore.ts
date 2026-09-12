@@ -1,6 +1,16 @@
 import { create } from 'zustand'
 import type { SectionId } from '../data/sections'
 
+const TUTORIAL_KEY = 'f1-portfolio-tutorial-seen'
+
+function readTutorialSeen(): boolean {
+  try {
+    return localStorage.getItem(TUTORIAL_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 /**
  * `lights` is the grid, waiting for the first W. Only ever visited once, on
  * load: every later lap reaches the grid already moving into `launching`.
@@ -35,6 +45,10 @@ interface RaceState {
   phase: RacePhase
   /** The section being approached or read, or null while free driving. */
   activeSection: SectionId | null
+  /** Which item of activeSection's paged card is open. Reset to 0 on every
+   * normal arrival; set from `warpTarget.item` on a navbar deep link, so a
+   * warp opens on the requested item rather than always item 1 (spec 10.5). */
+  activeItem: number
   /** Non-null only while phase is `warping`. */
   warpTarget: WarpTarget | null
   /**
@@ -43,9 +57,20 @@ interface RaceState {
    * read it is friction, and the navbar reaches it.
    */
   driverSeen: boolean
+  /** Block G: the onboarding card shown before DRIVER on a first visit.
+   * Backed by localStorage so a returning visitor lands on DRIVER directly;
+   * the navbar's "How to drive" entry can still set this back to false to
+   * reopen it without touching that persisted flag. */
+  tutorialSeen: boolean
   setPhase: (phase: RacePhase) => void
   setActiveSection: (section: SectionId | null) => void
+  setActiveItem: (item: number) => void
   setDriverSeen: (seen: boolean) => void
+  /** Dismissing (Enter or Skip) both closes it now and persists "seen" so it
+   * never auto-shows again. Reopening from the navbar calls this with
+   * `persist: false`, so the flag it just spent is not re-spent. */
+  dismissTutorial: (persist?: boolean) => void
+  reopenTutorial: () => void
   requestWarp: (target: WarpTarget) => void
   clearWarp: () => void
   /** Restores the pre-lap state without touching the mounted scene tree. */
@@ -55,14 +80,28 @@ interface RaceState {
 export const useRaceStore = create<RaceState>((set) => ({
   phase: 'lights',
   activeSection: null,
+  activeItem: 0,
   warpTarget: null,
   driverSeen: false,
+  tutorialSeen: readTutorialSeen(),
   setPhase: (phase) => set({ phase }),
   setActiveSection: (activeSection) => set({ activeSection }),
+  setActiveItem: (activeItem) => set({ activeItem }),
   setDriverSeen: (driverSeen) => set({ driverSeen }),
+  dismissTutorial: (persist = true) => {
+    if (persist) {
+      try {
+        localStorage.setItem(TUTORIAL_KEY, '1')
+      } catch {
+        /* private browsing or storage disabled: still dismisses for this session */
+      }
+    }
+    set({ tutorialSeen: true })
+  },
+  reopenTutorial: () => set({ tutorialSeen: false }),
   requestWarp: (warpTarget) => set({ warpTarget, phase: 'warping' }),
   clearWarp: () => set({ warpTarget: null }),
-  // driverSeen deliberately survives a reset: the lap rolls over, the profile
-  // does not come back.
-  reset: () => set({ phase: 'lights', activeSection: null, warpTarget: null }),
+  // driverSeen and tutorialSeen deliberately survive a reset: the lap rolls
+  // over, neither the profile nor the onboarding card comes back on their own.
+  reset: () => set({ phase: 'lights', activeSection: null, activeItem: 0, warpTarget: null }),
 }))

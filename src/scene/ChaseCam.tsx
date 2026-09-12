@@ -124,13 +124,39 @@ export function ChaseCam() {
 
   const jolt = useRef(0)
 
+  /**
+   * Chase-cam yaw lag, Block F: while drifting, the rig's own forward/left
+   * basis follows the car's slip angle only slowly, so during the slide the
+   * body visibly rotates relative to a camera that has not caught up yet --
+   * which is the whole reason a drift reads on screen instead of just
+   * looking like the same chase view with a sideways car glued to it. Once
+   * the slip angle stops changing (release, or holding a steady slide) the
+   * lag catches up and the camera settles directly behind again.
+   */
+  const slipLag = useRef(0)
+  const YAW_LAG_RATE = 2.2 // per second, slower than FOLLOW_RATE so it visibly trails
+
+  // Dev-only assertion for Block F invariant 4: the rig must not swing or
+  // overshoot while reversing. A per-frame jump past this many metres, at a
+  // normal (non-alt-tabbed) delta, means the signed-speed lead term above is
+  // pushing the base position the wrong way again.
+  const prevBaseForAssert = useRef<THREE.Vector3 | null>(null)
+  const warnedSwing = useRef(false)
+
   useFrame((state, rawDelta) => {
     // Same reasoning as Car.tsx: an alt-tab or a stalled frame hands back a
     // huge delta, and an unclamped one snaps the camera straight to its target,
     // erasing the follow lag for a single jarring frame.
     const delta = Math.min(rawDelta, 1 / 30)
 
-    const { s, d, v, warpProgress } = useCarStore.getState()
+    const { s, d, v, warpProgress, slipAngle, reversing } = useCarStore.getState()
+    // Block F invariant 4: the feed-forward lead below must use SIGNED
+    // speed. `v` from the store is a magnitude; reverse flips its sign here
+    // so backing up pulls the lead term the other way instead of still
+    // pushing the smoothing target further forward, which is what let the
+    // rig swing past the car (or lag increasingly behind it) while reversing
+    // before this existed.
+    const signedV = reversing ? -v : v
     const phase = useRaceStore.getState().phase
     const warping = warpProgress >= 0
 
@@ -171,13 +197,33 @@ export function ChaseCam() {
         carPos.z + fr.tz * LOOK_ALONG * blend.current,
       )
     } else {
-      // Build the offset out of the car basis so the rig follows the curve.
+      // Yaw lag: the rig's own basis follows the slip angle only slowly, at
+      // YAW_LAG_RATE rather than snapping to it, so a drift shows up as the
+      // body rotating relative to a camera that has not caught up (reduced
+      // motion snaps instead, same as the orbit).
+      const targetSlipRad = (slipAngle * Math.PI) / 180
+      if (reduce) {
+        slipLag.current = targetSlipRad
+      } else {
+        slipLag.current += (targetSlipRad - slipLag.current) * (1 - Math.exp(-YAW_LAG_RATE * delta))
+      }
+      const cosL = Math.cos(slipLag.current)
+      const sinL = Math.sin(slipLag.current)
+      // Rotating the tangent/left basis by the lagged slip angle, using this
+      // project's own atan2(tx, tz) heading convention throughout.
+      const ltx = fr.tx * cosL + fr.tz * sinL
+      const ltz = fr.tz * cosL - fr.tx * sinL
+      const llx = fr.lx * cosL + fr.lz * sinL
+      const llz = fr.lz * cosL - fr.lx * sinL
+
+      // Build the offset out of the lagged car basis so the rig follows the
+      // curve, but trails the slip angle during a drift.
       desired.set(
-        carPos.x + fr.lx * RIG_LATERAL + fr.tx * RIG_ALONG,
+        carPos.x + llx * RIG_LATERAL + ltx * RIG_ALONG,
         RIG_UP,
-        carPos.z + fr.lz * RIG_LATERAL + fr.tz * RIG_ALONG,
+        carPos.z + llz * RIG_LATERAL + ltz * RIG_ALONG,
       )
-      orbitLook.set(carPos.x + fr.tx * LOOK_ALONG, LOOK_UP, carPos.z + fr.tz * LOOK_ALONG)
+      orbitLook.set(carPos.x + ltx * LOOK_ALONG, LOOK_UP, carPos.z + ltz * LOOK_ALONG)
     }
 
     if (!primed.current) {
@@ -190,21 +236,45 @@ export function ChaseCam() {
       // hundreds of metres behind the car, and the feed-forward correction that
       // normally cancels it would overshoot just as far the other way.
       base.current.copy(desired)
+      // A warp snap is a legitimate huge jump, not the swing invariant 4
+      // guards against. Drop the reference point so the first frame back in
+      // the feed-forward branch below does not compare across the snap.
+      prevBaseForAssert.current = null
     } else if (blend.current < 1) {
       // Mid-orbit (or parked front): no feed-forward lag term, since the car
       // is stationary through 'lights', 'launching' and 'dry'.
       base.current.copy(desired)
+      prevBaseForAssert.current = null
     } else {
       // Feed-forward: exponential smoothing alone settles at a lag of
       // speed / FOLLOW_RATE behind a constantly-moving target, so push the
       // target ahead ALONG THE TANGENT by that same amount to cancel the
       // steady-state error. Smoothing still absorbs the transient during
-      // acceleration and braking.
-      const lead = v / FOLLOW_RATE
+      // acceleration and braking. SIGNED speed (Block F invariant 4): in
+      // reverse this pulls the target back the other way, which is what
+      // keeps the rig sitting behind the car instead of swinging past it.
+      const lead = signedV / FOLLOW_RATE
       desired.x += fr.tx * lead
       desired.z += fr.tz * lead
       const t = 1 - Math.exp(-FOLLOW_RATE * delta)
       base.current.lerp(desired, t)
+
+      if (import.meta.env.DEV && reversing && !warnedSwing.current) {
+        if (prevBaseForAssert.current && delta > 0) {
+          const jump = base.current.distanceTo(prevBaseForAssert.current)
+          // At REVERSE_TOP_SPEED (~7 m/s) even a single un-clamped 1/30s
+          // frame moves the rig well under a metre; several metres in one
+          // frame means it swung, not followed.
+          if (jump > 3) {
+            warnedSwing.current = true
+            console.error(
+              `ChaseCam: rig jumped ${jump.toFixed(2)}m in one frame while reversing ` +
+                '(invariant 4 violated: feed-forward lead is not using signed speed correctly)',
+            )
+          }
+        }
+        prevBaseForAssert.current = (prevBaseForAssert.current ?? new THREE.Vector3()).copy(base.current)
+      }
     }
 
     camera.position.copy(base.current)

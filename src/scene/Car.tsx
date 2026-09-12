@@ -8,6 +8,7 @@ import { SECTIONS, sectionById } from '../data/sections'
 import { TRACK_LENGTH, curvatureAt, frameAt, wrapS } from '../track/trackFrame'
 import { createCarState, stepCar, stopDistance, type CarInput } from '../sim/car'
 import { CAR_SCALE } from '../sim/carSpec'
+import { useIsTouchDevice } from '../ui/useTouch'
 
 // drei defaults the decoder path to Google's CDN. Self-hosting avoids a runtime
 // dependency on an external host for something this core.
@@ -89,7 +90,7 @@ function restQuat(node: THREE.Object3D): THREE.Quaternion {
  * between the navbar keyboard model and the driving model. That is by
  * construction rather than by suppression.
  */
-function useDriveInput() {
+function useDriveInput(isTouch: boolean) {
   // wJustPressed is set on the keydown that transitions 0 to held, and consumed
   // the next time a frame reads it, so it behaves as a one-shot edge regardless
   // of how long a frame takes to come around.
@@ -98,10 +99,33 @@ function useDriveInput() {
     brake: false,
     left: false,
     right: false,
+    handbrake: false,
     wJustPressed: false,
   })
 
+  // Block G4: auto-drive. Any tap anywhere is the touch equivalent of the one
+  // W press that starts the lights or leaves a stopped card; continuous
+  // throttle while actually driving is applied per-frame in Car's own
+  // useFrame, not here, since it depends on the current phase. No drift, no
+  // reverse: this listener only ever sets wJustPressed.
   useEffect(() => {
+    if (!isTouch) return
+    const onTap = () => {
+      // The onboarding card is dismissed by its OWN buttons only, never by a
+      // tap that happens to land somewhere else on it: found by testing a
+      // tap that missed both buttons, which silently launched the car
+      // underneath the still-open tutorial (the pointerdown had already
+      // bubbled to window before the tutorial's own handler even ran).
+      if (!useRaceStore.getState().tutorialSeen) return
+      if (!input.current.throttle) input.current.wJustPressed = true
+      input.current.throttle = true
+    }
+    window.addEventListener('pointerdown', onTap)
+    return () => window.removeEventListener('pointerdown', onTap)
+  }, [isTouch])
+
+  useEffect(() => {
+    if (isTouch) return
     // The navbar owns the keyboard while one of its controls has focus. W must
     // not launch the car out from under a reader who is only reading the menu.
     const navHasFocus = () => Boolean(document.activeElement?.closest('[data-nav-root]'))
@@ -116,6 +140,12 @@ function useDriveInput() {
       if (k === 's') input.current.brake = true
       if (k === 'a') input.current.left = true
       if (k === 'd') input.current.right = true
+      if (e.code === 'Space') {
+        // Space also scrolls the page by default, and there is no scrolling
+        // surface under the canvas to preserve that for.
+        e.preventDefault()
+        input.current.handbrake = true
+      }
     }
     const up = (e: KeyboardEvent) => {
       // Never gated on focus: a key released after focus moved into the navbar
@@ -125,6 +155,7 @@ function useDriveInput() {
       if (k === 's') input.current.brake = false
       if (k === 'a') input.current.left = false
       if (k === 'd') input.current.right = false
+      if (e.code === 'Space') input.current.handbrake = false
     }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
@@ -149,15 +180,28 @@ function nextStopAfter(s: number) {
 export function Car() {
   const { scene, nodes } = useGLTF('/models/car.glb')
   const group = useRef<THREE.Group>(null!)
-  const input = useDriveInput()
+  const isTouch = useIsTouchDevice()
+  const input = useDriveInput(isTouch)
 
   const car = useRef(createCarState(0))
-  const warp = useRef({ target: null as unknown, from: 0, to: 0, elapsed: 0 })
+  const warp = useRef({ target: null as unknown, from: 0, to: 0, elapsed: 0, progressAtStart: 0 })
   const lastPhase = useRef<string>('lights')
   /** Elapsed time inside the current 'launching' phase. */
   const launchElapsed = useRef(0)
+  /** Block F lap timer, milliseconds since lights-out. Reset when a new
+   * 'launching' phase begins, frozen (not incremented) outside 'driving' and
+   * 'arriving': it measures driving, not reading a card or a navbar warp. */
+  const lapElapsed = useRef(0)
   const brakeLightL = useRef<THREE.Mesh>(null!)
   const brakeLightR = useRef<THREE.Mesh>(null!)
+
+  // Dev-only assertions for Block F / F5's four reverse invariants (fire
+  // once each, as a console.error, rather than throwing: these guard against
+  // a regression during real interactive play, not a condition the app
+  // should crash on for a visitor).
+  const warnedSectionReverse = useRef(false)
+  const warnedContactReverse = useRef(false)
+  const warnedFuelRose = useRef(false)
 
   /**
    * GLTFLoader sanitises node names, so the GLB `tires.001` arrives as
@@ -216,12 +260,28 @@ export function Car() {
     const delta = Math.min(rawDelta, 1 / 30)
     const race = useRaceStore.getState()
     const p = car.current
-    const { throttle, brake, left, right, wJustPressed } = input.current
+    // Block G4 auto-drive: continuous throttle while actually driving, so a
+    // tap only ever has to start the car moving, never sustain it. Depends
+    // on the current phase, so it lives here rather than in the input
+    // listener itself.
+    if (isTouch && race.phase === 'driving') input.current.throttle = true
+    const { throttle, brake, left, right, handbrake, wJustPressed } = input.current
     input.current.wJustPressed = false
 
     if (lastPhase.current !== race.phase) {
       lastPhase.current = race.phase
     }
+
+    // Lap timer: only 'driving' and 'arriving' count as driving. 'stopped'
+    // and 'dry' are a card open (reading, not driving); 'warping' skips real
+    // distance and would corrupt the figure if it ticked; 'lights' and
+    // 'launching' are before lights-out, where the timer reads zero.
+    if (race.phase === 'driving' || race.phase === 'arriving') {
+      lapElapsed.current += delta * 1000
+    }
+
+    const fuelBeforeThisFrame = p.fuel
+    let refueledThisFrame = false
 
     switch (race.phase) {
       case 'lights': {
@@ -231,6 +291,7 @@ export function Car() {
         if (wJustPressed) {
           useRaceStore.getState().setDriverSeen(true)
           launchElapsed.current = 0
+          lapElapsed.current = 0
           useRaceStore.getState().setPhase('launching')
         }
         break
@@ -252,22 +313,38 @@ export function Car() {
       case 'driving': {
         const stop = nextStopAfter(p.s)
         // Hand the sim a target only once the braking zone is actually in
-        // reach, so free driving stays free.
+        // reach, so free driving stays free. Never while reversing (Block F
+        // invariant 1/2): a section stop fires only on a forward crossing,
+        // and reverse-engagement itself already requires targetS === null,
+        // so this is the React-side half of the same guard the sim enforces
+        // on its own arrival snap.
         const gap = wrapS(stop.s - p.s)
-        const arming = gap <= stopDistance(p.v) + 2
+        const arming = !p.reversing && gap <= stopDistance(p.v) + 2
         const cmd: CarInput = {
           throttle,
           brake,
           steer: (left ? 1 : 0) + (right ? -1 : 0),
           targetS: arming ? stop.s : null,
           steerEnabled: true,
+          handbrake,
         }
         const { arrived } = stepCar(p, cmd, delta, track)
         if (arming) {
+          // Dev assertion, Block F invariant 1: a section only ever arms on
+          // a forward approach.
+          if (import.meta.env.DEV && p.reversing && !warnedSectionReverse.current) {
+            warnedSectionReverse.current = true
+            console.error(`Car: section "${stop.id}" armed while reversing (invariant 1 violated)`)
+          }
           useRaceStore.getState().setActiveSection(stop.id)
+          useRaceStore.getState().setActiveItem(0)
           if (race.phase === 'driving') useRaceStore.getState().setPhase('arriving')
         }
         if (arrived) {
+          if (import.meta.env.DEV && stop.kind === 'contact' && p.reversing && !warnedContactReverse.current) {
+            warnedContactReverse.current = true
+            console.error('Car: reached CONTACT while reversing (invariant 2 violated)')
+          }
           useRaceStore
             .getState()
             .setPhase(stop.kind === 'contact' ? 'dry' : 'stopped')
@@ -284,6 +361,7 @@ export function Car() {
           targetS: stop.s,
           // The limiter owns the car through the braking zone.
           steerEnabled: false,
+          handbrake: false,
         }
         const { arrived } = stepCar(p, cmd, delta, track)
         if (arrived) {
@@ -307,6 +385,7 @@ export function Car() {
         // nothing about it reads as a finish: no flag, no lap count.
         if (wJustPressed) {
           p.fuel = 1
+          refueledThisFrame = true
           useRaceStore.getState().setActiveSection(null)
           useRaceStore.getState().setPhase('creeping')
         }
@@ -327,6 +406,7 @@ export function Car() {
           // spec describes refuel, creep, lights and orbit as one flowing
           // sequence from the single W pressed at CONTACT.
           launchElapsed.current = 0
+          lapElapsed.current = 0
           useRaceStore.getState().setPhase('launching')
         } else {
           p.s = wrapS(p.s + step)
@@ -341,6 +421,13 @@ export function Car() {
           useRaceStore.getState().setPhase('driving')
           break
         }
+        // A warp is a forward teleport, never a continuation of reversing:
+        // clear it here so the dashboard does not keep reading "R" for a car
+        // that a moment ago got flown to a different part of the lap.
+        if (p.reversing) {
+          p.reversing = false
+          p.reverseHoldTime = 0
+        }
         const stop = sectionById(target.section)
         if (warp.current.target !== target) {
           // FORWARD ONLY around the loop. A car sliding backwards or sideways
@@ -351,6 +438,7 @@ export function Car() {
             from: p.s,
             to: p.s + wrapS(stop.s - p.s),
             elapsed: 0,
+            progressAtStart: p.progress,
           }
         }
         warp.current.elapsed += delta
@@ -360,7 +448,19 @@ export function Car() {
         )
         p.d = 0
         p.v = 0
-        p.fuel = Math.max(0, 1 - p.s / TRACK_LENGTH)
+        // Same fuel invariant as stepCar's, and for the same reason: `s`
+        // wraps at the start/finish line, so a warp whose destination lies
+        // on the far side of that wrap (recomputing fuel from raw `s`
+        // instead of accumulated forward distance) briefly read as a full
+        // refuel. `to - from` is always the real forward distance covered
+        // (see the comment above), never wrapped, so progress can only rise
+        // here -- exactly matching "however the lap was driven, skipped, or
+        // jumped" from the fuel model's own governing rule.
+        p.progress = Math.max(
+          p.progress,
+          warp.current.progressAtStart + (warp.current.to - warp.current.from) * warpEase(t),
+        )
+        p.fuel = Math.min(p.fuel, Math.max(0, Math.min(1, 1 - p.progress / TRACK_LENGTH)))
         useCarStore.getState().setWarpProgress(t)
 
         if (t >= 1) {
@@ -374,9 +474,23 @@ export function Car() {
           // lights and orbit: those are a lap-boundary ceremony, not
           // something a mid-lap navbar detour should retrigger.
           r.setActiveSection(stop.kind === 'grid' ? 'driver' : stop.id)
+          r.setActiveItem(target.item ?? 0)
           r.setPhase(stop.kind === 'contact' ? 'dry' : 'stopped')
         }
         break
+      }
+    }
+
+    // Dev assertion, Block F invariant 3: fuel is monotonic outside an
+    // explicit refuel. `stepCar` already enforces this with its own
+    // `Math.min` guard, so this only ever fires if something bypasses
+    // `stepCar` and writes `p.fuel` directly.
+    if (import.meta.env.DEV && !refueledThisFrame && !warnedFuelRose.current) {
+      if (p.fuel > fuelBeforeThisFrame + 1e-6) {
+        warnedFuelRose.current = true
+        console.error(
+          `Car: fuel rose from ${fuelBeforeThisFrame.toFixed(4)} to ${p.fuel.toFixed(4)} without a refuel (invariant 3 violated)`,
+        )
       }
     }
 
@@ -390,6 +504,12 @@ export function Car() {
       rpm: p.rpm,
       fuel: p.fuel,
       braking: p.braking,
+      slipAngle: p.slipAngle,
+      drifting: p.drifting,
+      driftScore: p.driftScore,
+      lapElapsedMs: lapElapsed.current,
+      reversing: p.reversing,
+      throttleInput: throttle,
     })
 
     // --- place the car ---
@@ -397,11 +517,17 @@ export function Car() {
     const fr = frameAt(p.s)
     group.current.position.set(fr.x + fr.lx * p.d, 0, fr.z + fr.lz * p.d)
 
-    // The model faces +Z, so the tangent heading is a direct Y rotation. A
-    // small slip angle points the nose slightly into the direction of lateral
-    // travel, which is what sells a car changing line rather than sliding.
+    // The model faces +Z, so the tangent heading is a direct Y rotation. The
+    // small `-p.roll * 0.06` nudge is cosmetic, present even outside a drift,
+    // to sell a car changing line rather than sliding. `p.slipAngle` is the
+    // real thing: body yaw is tangent heading plus slip angle, per the brief.
     const heading = Math.atan2(fr.tx, fr.tz)
-    group.current.rotation.set(p.pitch * PITCH_MAX, heading - p.roll * 0.06, p.roll * ROLL_MAX)
+    const slipRad = (p.slipAngle * Math.PI) / 180
+    group.current.rotation.set(
+      p.pitch * PITCH_MAX,
+      heading - p.roll * 0.06 + slipRad,
+      p.roll * ROLL_MAX,
+    )
 
     const yaw = p.roll * WHEEL_YAW_MAX
     spinQuat.setFromAxisAngle(SPIN_AXIS, p.wheelAngle)
