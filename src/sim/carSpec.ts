@@ -19,12 +19,22 @@ export const CAR_SCALE = 0.7
 const WHEEL_RADIUS_MODEL = 0.56
 /** Front wheel node X in model space. Measured from the GLB. */
 const FRONT_WHEEL_X_MODEL = 1.627
+/** Rear wheel node Z in model space (spec 1.3's `tires003`, the merged rear
+ * pair). Used by Block F's drift effects to place smoke and skid marks at
+ * the rear axle; no separate rear track width is recorded anywhere, so
+ * WHEEL_HALF_TRACK stands in for both axles, close enough for a cosmetic
+ * particle/ribbon origin. */
+const REAR_WHEEL_Z_MODEL = -3.69
 
 /** World-space rolling radius, for converting speed to wheel spin. */
 export const WHEEL_RADIUS = WHEEL_RADIUS_MODEL * CAR_SCALE
 
 /** Distance from the car centreline to the outside of a front wheel. */
 export const WHEEL_HALF_TRACK = FRONT_WHEEL_X_MODEL * CAR_SCALE
+
+/** Rear axle position along the car's own local Z, world-scale metres.
+ * Negative: behind the car's local origin, per the GLB's own convention. */
+export const REAR_WHEEL_Z = REAR_WHEEL_Z_MODEL * CAR_SCALE
 
 /**
  * How far the car may move off the racing line before a wheel hangs over the
