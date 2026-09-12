@@ -76,7 +76,7 @@ export function MegaMenu({
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={fade}
-              className="w-full pb-3"
+              className="max-h-[58vh] w-full overflow-y-auto pb-3"
             >
               {group.rows.map((row) => (
                 <li key={`${row.label}-${row.year}`}>
@@ -86,7 +86,7 @@ export function MegaMenu({
                     className="focus-ring group grid w-full grid-cols-[7.5rem_1fr_auto] items-baseline gap-4 px-6 py-2.5 text-left transition-colors hover:bg-[rgba(247,244,241,0.05)]"
                   >
                     {/* Timing column. */}
-                    <span className="tabular font-mono text-[11px] tracking-widest text-slate uppercase transition-colors group-hover:text-[var(--color-hud-cyan)]">
+                    <span className="tabular truncate font-mono text-[11px] tracking-widest text-slate uppercase transition-colors group-hover:text-[var(--color-hud-cyan)]">
                       {row.year}
                     </span>
                     <span className="min-w-0">

@@ -1,14 +1,12 @@
 import { SECTIONS, type SectionId } from '../data/sections'
+import { PROJECTS, ACHIEVEMENTS, EXPERIENCE } from '../data/content'
 import type { WarpTarget } from '../state/raceStore'
 
 /**
- * STAGE 2: one row per section, so the navbar keeps working while the card
- * content is out of the tree.
- *
- * Stage 4 replaces the rows with one per card item, which is the real win over
- * v1: a nav row and a card item become one-to-one, instead of several named
- * rows resolving to the same stop because the timeline had folded them
- * together.
+ * One row per card item, per spec 8: a nav row and a card item are now
+ * one-to-one, so a click warps to the section AND opens the card on that
+ * exact item, instead of several named rows resolving to the same stop the
+ * way v1's chronological timeline did.
  */
 
 export interface NavRow {
@@ -29,23 +27,55 @@ export interface NavGroup {
   rows: NavRow[]
 }
 
-const NOTES: Record<SectionId, string> = {
-  driver: 'Stack sheet, driver stats, and the education line.',
-  projects: 'Nine builds, strongest first. HireSignal through the Java log analyzer.',
-  achievements: 'Four hackathon results, two first places, LeetCode Knight, GenAI cert.',
-  experience: 'The AI automation internship, then three leadership roles.',
-  contact: 'Every way to reach me, and what I am open to.',
+const DRIVER_ROWS: NavRow[] = [
+  {
+    year: '0m',
+    label: 'Driver',
+    note: 'Stack sheet, driver stats, and the education line.',
+    target: { section: 'driver' },
+  },
+]
+
+const PROJECT_ROWS: NavRow[] = PROJECTS.map((p, i) => ({
+  year: p.timeline,
+  label: p.title,
+  note: p.oneLine,
+  target: { section: 'projects', item: i },
+}))
+
+const ACHIEVEMENT_ROWS: NavRow[] = ACHIEVEMENTS.map((a, i) => ({
+  year: a.date || a.result,
+  label: a.title,
+  note: a.description,
+  target: { section: 'achievements', item: i },
+}))
+
+const EXPERIENCE_ROWS: NavRow[] = EXPERIENCE.map((e, i) => ({
+  year: e.timeline,
+  label: `${e.role}, ${e.org}`,
+  note: e.bullets[0],
+  target: { section: 'experience', item: i },
+}))
+
+const CONTACT_ROWS: NavRow[] = [
+  {
+    year: 'Finish',
+    label: 'Contact',
+    note: 'Every way to reach me, and what I am open to.',
+    target: { section: 'contact' },
+  },
+]
+
+const ROWS_BY_SECTION: Record<SectionId, NavRow[]> = {
+  driver: DRIVER_ROWS,
+  projects: PROJECT_ROWS,
+  achievements: ACHIEVEMENT_ROWS,
+  experience: EXPERIENCE_ROWS,
+  contact: CONTACT_ROWS,
 }
 
 export const NAV_GROUPS: NavGroup[] = SECTIONS.map((section) => ({
   id: section.id,
   label: section.label,
-  rows: [
-    {
-      year: `${section.s.toFixed(0)}m`,
-      label: section.label,
-      note: NOTES[section.id],
-      target: { section: section.id },
-    },
-  ],
+  rows: ROWS_BY_SECTION[section.id],
 }))

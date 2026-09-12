@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence } from 'motion/react'
-import { FiChevronDown } from 'react-icons/fi'
+import { FiChevronDown, FiMenu, FiX } from 'react-icons/fi'
 import { NAV_GROUPS, type NavRow } from './navData'
 import { NavPill } from './NavPill'
 import { MegaMenu } from './MegaMenu'
 import { SURFACE_BLUR, SURFACE_FLAT } from './surface'
 import { useRaceStore } from '../state/raceStore'
+import { useIsNarrowViewport } from './useTouch'
 
 /** Grace period so moving the pointer from a pill down into the menu does not close it. */
 const CLOSE_DELAY = 200
@@ -28,6 +29,10 @@ export function Navbar() {
   const menuRef = useRef<HTMLDivElement>(null)
   const requestWarp = useRaceStore((s) => s.requestWarp)
   const phase = useRaceStore((s) => s.phase)
+  const reopenTutorial = useRaceStore((s) => s.reopenTutorial)
+  // Block G4: the pill bar collapses to a single menu button under 768px.
+  const isNarrow = useIsNarrowViewport()
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   const cancelClose = () => {
     if (closeTimer.current !== null) {
@@ -200,38 +205,101 @@ export function Navbar() {
             </span>
           </span>
 
-          <nav ref={barRef} onKeyDown={onBarKeys} className="flex flex-wrap items-center gap-2">
-            {NAV_GROUPS.map((group) => (
-              <span
-                key={group.id}
-                className="flex items-center"
-                onMouseEnter={() => hover(group.id)}
+          {isNarrow ? (
+            // Block G4: one menu button instead of the pill bar. No hover
+            // intent to worry about on touch, so this is a plain toggle.
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen((open) => !open)}
+              aria-label={mobileMenuOpen ? 'Close menu' : 'Open menu'}
+              aria-expanded={mobileMenuOpen}
+              className="focus-ring chamfer-sm flex h-9 w-9 shrink-0 items-center justify-center border border-slate text-paper"
+            >
+              {mobileMenuOpen ? <FiX aria-hidden /> : <FiMenu aria-hidden />}
+            </button>
+          ) : (
+            <>
+              <nav ref={barRef} onKeyDown={onBarKeys} className="flex flex-wrap items-center gap-2">
+                {NAV_GROUPS.map((group) => (
+                  <span
+                    key={group.id}
+                    className="flex items-center"
+                    onMouseEnter={() => hover(group.id)}
+                  >
+                    <NavPill
+                      label={group.label}
+                      // The wipe answers the pointer, not the delayed panel.
+                      open={hoverId === group.id || openId === group.id}
+                      onHover={() => hover(group.id)}
+                      onFocus={() => openNow(group.id)}
+                      // A group with one row is itself the destination, so clicking
+                      // the pill jumps rather than making the reader open a menu of one.
+                      onSelect={() => {
+                        if (group.rows.length === 1) pick(group.rows[0])
+                        else openNow(group.id)
+                      }}
+                    />
+                    {group.rows.length > 1 && (
+                      <FiChevronDown
+                        aria-hidden
+                        className={`-ml-1 shrink-0 text-slate transition-transform ${
+                          openId === group.id ? 'rotate-180' : ''
+                        }`}
+                      />
+                    )}
+                  </span>
+                ))}
+              </nav>
+
+              {/* Not a warp target, so it lives outside <nav>: pills() scopes
+                  its querySelectorAll to barRef for the arrow-key model, and
+                  this button has no matching NAV_GROUPS entry for that index
+                  lookup. */}
+              <button
+                type="button"
+                onClick={() => reopenTutorial()}
+                className="focus-ring chamfer-sm shrink-0 border border-slate px-3 py-2 font-mono text-[11px] tracking-[0.14em] text-smoke uppercase transition-colors hover:text-paper"
               >
-                <NavPill
-                  label={group.label}
-                  // The wipe answers the pointer, not the delayed panel.
-                  open={hoverId === group.id || openId === group.id}
-                  onHover={() => hover(group.id)}
-                  onFocus={() => openNow(group.id)}
-                  // A group with one row is itself the destination, so clicking
-                  // the pill jumps rather than making the reader open a menu of one.
-                  onSelect={() => {
-                    if (group.rows.length === 1) pick(group.rows[0])
-                    else openNow(group.id)
-                  }}
-                />
-                {group.rows.length > 1 && (
-                  <FiChevronDown
-                    aria-hidden
-                    className={`-ml-1 shrink-0 text-slate transition-transform ${
-                      openId === group.id ? 'rotate-180' : ''
-                    }`}
-                  />
-                )}
-              </span>
-            ))}
-          </nav>
+                How to drive
+              </button>
+            </>
+          )}
         </div>
+
+        {isNarrow && mobileMenuOpen && (
+          <div className="max-h-[70vh] overflow-y-auto border-t border-slate px-2 pb-3">
+            {NAV_GROUPS.map((group) => (
+              <div key={group.id} className="py-2">
+                <p className="px-4 py-1 font-mono text-[10px] tracking-[0.2em] text-smoke uppercase">
+                  {group.label}
+                </p>
+                {group.rows.map((row) => (
+                  <button
+                    key={`${row.label}-${row.year}`}
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false)
+                      pick(row)
+                    }}
+                    className="focus-ring block w-full px-4 py-2 text-left text-sm text-paper hover:bg-[rgba(247,244,241,0.05)]"
+                  >
+                    {row.label}
+                  </button>
+                ))}
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() => {
+                setMobileMenuOpen(false)
+                reopenTutorial()
+              }}
+              className="focus-ring mt-1 block w-full px-4 py-2 text-left font-mono text-xs tracking-widest text-smoke uppercase"
+            >
+              How to drive
+            </button>
+          </div>
+        )}
       </div>
 
       {/* The panel itself is never re-keyed on the group: switching groups
