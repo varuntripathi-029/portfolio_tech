@@ -166,10 +166,14 @@ const CG_HEIGHT = 0.5
 const FRONT_CORNERING_STIFFNESS = 80000
 const REAR_CORNERING_STIFFNESS = 85000
 
-/** Front wheel steering limit and how fast the actuator reaches a new target. */
-const MAX_STEER_DEG = 32
+/** Front wheel steering limit and how fast the actuator reaches a new target.
+ * Both reduced (Block I) from 32deg/8 -- see the file-level note on why this
+ * alone was NOT enough by itself (the front axle was saturating at ~14.6deg
+ * of slip angle even before this change, so a smaller max angle alone barely
+ * moved the numbers until FRONT_CORNERING_STIFFNESS also came down). */
+const MAX_STEER_DEG = 18
 const MAX_STEER_RAD = MAX_STEER_DEG * DEG
-const STEER_RESPONSE = 8
+const STEER_RESPONSE = 4
 
 /**
  * Yaw moment of inertia, kg*m^2. Not measured either: `MASS * a * b` is the
@@ -190,8 +194,13 @@ const YAW_INERTIA = MASS * CG_TO_FRONT * CG_TO_REAR
  * WHEELBASE, no slip, no forces) takes over instead. This is what stops a
  * standing start from being able to slide sideways, and it is also what
  * lets reverse steer at all despite skipping the dynamic model entirely.
+ * Lowered from 20 (Block I): a full-authority dynamic model kicking in only
+ * above 20 m/s meant ordinary low/mid-speed driving and tapping the wheel
+ * out of a turn were still going through the kinematic blend, which is what
+ * made a light steering input feel like it snapped the car sideways instead
+ * of tracking smoothly.
  */
-const STEER_GRIP_SPEED = 20
+const STEER_GRIP_SPEED = 14
 
 /** How much the handbrake multiplies rear cornering stiffness AND the
  * rear's peak grip budget by. A locked/skidding wheel has both a much
