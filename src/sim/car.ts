@@ -555,8 +555,17 @@ export function stepCar(
 
     // Velocity points backward while reversing, which flips which way a
     // given wheel angle turns the car relative to forward driving -- same
-    // as backing a real car out of a spot.
-    state.yawRate = (state.v * Math.tan(state.steeringAngle)) / WHEELBASE
+    // as backing a real car out of a spot. The kinematic formula is
+    // yawRate = vxSigned * tan(steer) / WHEELBASE; vxSigned is NEGATIVE
+    // here (the vehicle is moving opposite its own forward axis), which is
+    // what actually produces the flip -- BUG (now fixed): this used to read
+    // `state.v` (the unsigned reverse speed) directly, which fed in the
+    // same sign as forward driving and so never flipped anything. The
+    // front tyres still point exactly where the actuator puts them (this
+    // line never touches steeringAngle) -- only the resulting rotation
+    // direction changes, which is the correct behaviour, not a visual
+    // steering flip.
+    state.yawRate = (-state.v * Math.tan(state.steeringAngle)) / WHEELBASE
     state.yaw = normalizeAngle(state.yaw + state.yawRate * step)
     state.vLat = 0
 
