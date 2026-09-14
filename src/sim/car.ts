@@ -256,6 +256,26 @@ const YAW_DAMPING_QUADRATIC = 2.2
 const VLAT_MAX = 40
 
 /**
+ * Self-alignment torque while pinned against the track boundary, rad/s^2
+ * per rad of heading misalignment from the track tangent. `d` (position)
+ * being clamped at the kerb only ever stopped the car moving further out;
+ * it never touched the car's HEADING, so a slide that reached the kerb
+ * with a lot of yaw still on it could settle at genuinely zero slip angle
+ * -- fully "recovered" by every tyre measure -- while still pointed
+ * anywhere up to nearly sideways into the barrier, and then just cruise
+ * there indefinitely, no longer sliding but clearly not driving normally
+ * either. A real wall constrains lateral motion along its whole length,
+ * not just at one point, which is why a car (or a coin) sliding along a
+ * guardrail rotates to run ALONG it rather than staying stuck at whatever
+ * angle it first touched it at -- this is that effect, gated on having
+ * actually been pinned last step (a real thing to be touching, not a
+ * background effect) and scaled by how far off the heading already is, so
+ * a line legitimately held tight against the kerb while pointed the right
+ * way (near-zero misalignment already) is unaffected.
+ */
+const KERB_ALIGN_K = 1.5
+
+/**
  * Below this road speed, steering blends from the dynamic (slip-angle) tyre
  * model toward a no-slip kinematic turn instead. A stationary tyre cannot
  * build a meaningful slip angle -- the atan2 in alphaFront/alphaRear stays
@@ -768,10 +788,17 @@ export function stepCar(
 
     const cosSteer = Math.cos(state.steeringAngle)
     const yawMoment = CG_TO_FRONT * FyFront * cosSteer - CG_TO_REAR * FyRear
+    // See KERB_ALIGN_K's own comment: `state.d`/`state.yaw` here are still
+    // last step's values (this step hasn't touched either yet), which is
+    // exactly the "was actually touching the boundary" and "how far off is
+    // the heading" this needs.
+    const wasPinned = Math.abs(state.d) >= STEER_LIMIT - 1e-3
+    const thetaOld = normalizeAngle(state.yaw - trackHeading)
     const yawAccel =
       yawMoment / YAW_INERTIA -
       YAW_DAMPING_LINEAR * yawRateOld -
-      YAW_DAMPING_QUADRATIC * yawRateOld * Math.abs(yawRateOld)
+      YAW_DAMPING_QUADRATIC * yawRateOld * Math.abs(yawRateOld) -
+      (wasPinned ? KERB_ALIGN_K * thetaOld : 0)
     // The -vLongOld*yawRateOld term is the standard bicycle-model coupling
     // from working in a ROTATING (vehicle) frame: without it a car turning
     // at constant slip angle would show zero lateral acceleration, which is
