@@ -317,6 +317,18 @@ const ROLL_REF = NOMINAL_GRIP
  */
 const MIN_DT = 1e-4
 
+/**
+ * Ceiling on the wheel spin rate actually fed to the render, rad/s. Purely
+ * cosmetic -- see its one call site in stepCar. 30 rad/s corresponds to a
+ * linear speed of 30*WHEEL_RADIUS =~ 11.8 m/s (=~42 km/h): below that the
+ * wheel's true rate is used unchanged (measured smooth at 26.6 km/h, ~8.5
+ * degrees of rotation per 60fps frame); above it, the visual rate stays
+ * flat rather than climbing toward the true ~184 rad/s TOP_SPEED would
+ * otherwise demand, which is what was reading as a wobble rather than a
+ * fast spin.
+ */
+const WHEEL_VISUAL_OMEGA_MAX = 30
+
 export interface CarState {
   /** Arc length along the lap, metres. */
   s: number
@@ -792,7 +804,22 @@ export function stepCar(
 
   state.fuel = Math.min(state.fuel, clamp(1 - state.progress / track.length, 0, 1))
   // Wheels spin the way the car is actually travelling.
-  state.wheelAngle += ((state.reversing ? -state.v : state.v) / WHEEL_RADIUS) * step
+  // Wheels spin the way the car is actually travelling, capped to
+  // WHEEL_VISUAL_OMEGA_MAX. `wheelAngle` has exactly one reader anywhere in
+  // the project (Car.tsx's spin quaternion) -- nothing physical or
+  // gameplay-facing depends on its true, uncapped value -- so this is a
+  // rendering fix, not a physics one. True angular speed at TOP_SPEED is
+  // v/WHEEL_RADIUS =~ 184 rad/s (=~1750 RPM, genuinely close to a real F1
+  // wheel's own top-speed spin rate). Rotating a rigid mesh through that
+  // much angle in a single 1/60s frame, with no motion-blur pass to hide
+  // the gaps, does not read as "spinning very fast" -- it reads as
+  // incoherent wobble, the wagon-wheel effect: consecutive discrete
+  // snapshots that many degrees apart give the eye nothing to track a
+  // single rotation direction from. Below the cap (roughly 40 km/h, per
+  // WHEEL_VISUAL_OMEGA_MAX's own comment) this never engages at all.
+  const trueOmega = (state.reversing ? -state.v : state.v) / WHEEL_RADIUS
+  const cappedOmega = clamp(trueOmega, -WHEEL_VISUAL_OMEGA_MAX, WHEEL_VISUAL_OMEGA_MAX)
+  state.wheelAngle += cappedOmega * step
 
   state.accelLong = (state.v - vBefore) / step
 
