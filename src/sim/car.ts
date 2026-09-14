@@ -162,9 +162,15 @@ const CG_TO_REAR = 1.5
  * below for how directly that follows from this single value. */
 const CG_HEIGHT = 0.5
 
-/** Front/rear tyre cornering stiffness, N per radian of slip angle. */
-const FRONT_CORNERING_STIFFNESS = 80000
-const REAR_CORNERING_STIFFNESS = 85000
+/** Front/rear tyre cornering stiffness, N per radian of slip angle.
+ * Rebalanced (Block I) from 80000/85000: the front was saturating into its
+ * slip-angle plateau at a shallower angle than any reasonable steering input
+ * could avoid, so any turn immediately maxed out front grip and read as
+ * twitchy. Lowering the front raises how far it can be steered before it
+ * saturates; raising the rear keeps the back end planted so the same change
+ * doesn't turn every turn-in into oversteer. */
+const FRONT_CORNERING_STIFFNESS = 32000
+const REAR_CORNERING_STIFFNESS = 150000
 
 /** Front wheel steering limit and how fast the actuator reaches a new target.
  * Both reduced (Block I) from 32deg/8 -- see the file-level note on why this
@@ -180,9 +186,13 @@ const STEER_RESPONSE = 4
  * standard stand-in when the real figure (mass distribution integrated over
  * the whole body) is unavailable, equivalent to assuming a radius of
  * gyration of sqrt(a*b) -- a common simplification in lightweight vehicle
- * sims, not a real spec number.
+ * sims, not a real spec number. Doubled (Block I): the plain a*b figure let
+ * yaw rate spin up too readily for how planted the retuned tyres above are
+ * meant to feel -- a real car's mass is not concentrated at the axles the
+ * way this stand-in implies, so the extra factor is a coarse correction in
+ * the same spirit as the stand-in itself, not a new assumption.
  */
-const YAW_INERTIA = MASS * CG_TO_FRONT * CG_TO_REAR
+const YAW_INERTIA = MASS * CG_TO_FRONT * CG_TO_REAR * 2
 
 /**
  * Below this road speed, steering blends from the dynamic (slip-angle) tyre
