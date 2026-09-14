@@ -11,6 +11,27 @@
  *
  * So the model lives in a function, and scripts/simulateLap.ts drives it in
  * Node. Car.tsx is a renderer that calls stepCar and places meshes.
+ *
+ * --- Steering/drift model (Block H rewrite) ---
+ *
+ * The car's position is still authoritative in track-relative (s, d): arc
+ * length and lateral offset, exactly as before, and every downstream system
+ * (fuel, section stops, the minimap) still reads those two numbers and does
+ * not know this file changed. What changed is what DRIVES them. The old
+ * model let A/D nudge `d` directly and let track curvature itself push the
+ * car around a corner (`dNext += sign(curvature) * drift * step`, fed by
+ * nothing but the road shape) -- the car followed the track whether or not
+ * anyone steered. This version is a small 2-DOF bicycle model: A/D sets a
+ * target front-wheel angle, that angle plus the car's own velocity produces
+ * front/rear tyre slip angles, slip angles produce lateral tyre forces
+ * (capped by a friction circle shared with braking/acceleration), tyre
+ * forces produce a yaw moment and a lateral acceleration, and only THOSE are
+ * integrated into a heading and a velocity. `s` and `d` are then just that
+ * velocity, resolved into the track's own basis. Nothing here reads track
+ * curvature to move the car sideways; the track only ever supplies where it
+ * is (`headingAt`) and how sharply it turns (`curvatureAt`, unused by the
+ * physics itself now, kept on the interface for anything downstream that
+ * still wants it).
  */
 
 import { GRIP_G, G, REF_SPEED } from '../track/circuit'
@@ -19,16 +40,24 @@ import { RUMBLE_D, STEER_LIMIT, WHEEL_RADIUS } from './carSpec'
 /** Top speed, about 305 km/h. */
 export const TOP_SPEED = REF_SPEED
 
+const DEG = Math.PI / 180
+
 /**
  * Mass is a modelling choice, not a measurement. It only ever appears as a
  * divisor next to the force numbers below, which were tuned together to hit the
  * acceleration targets, so changing it alone changes nothing useful.
+ *
+ * Kept at the pre-overhaul value rather than adopted from a generic "sports
+ * car" reference (1200kg is the more typical figure) because POWER,
+ * LAUNCH_ACCEL and DRAG_K were all tuned together against 800kg to hit the
+ * spec's 0-100/0-200 targets; changing mass alone without retuning those
+ * would silently blow the acceleration figures for a reason that has nothing
+ * to do with this rewrite. The cornering-stiffness values below are the
+ * user-facing tuning knob for how the car FEELS at the limit; mass is not.
  */
 const MASS = 800
 
-/**
- * Acceleration limit from tyre grip, at a standstill.
- */
+/** Acceleration limit from tyre grip, at a standstill. */
 const LAUNCH_ACCEL = 12.6
 
 /**
@@ -73,8 +102,10 @@ export const REVERSE_GEAR = -1
  *
  * REVERSED: spec 6.2 says "about 4g". Block F's own brief asks for braking
  * "just a little more harder" specifically so trail-braking into a corner
- * has enough weight transfer to feed the natural oversteer trigger below;
- * 4g read as too gentle for that to land. 4.6g is the new value.
+ * has enough weight transfer to feed natural oversteer; 4g read as too
+ * gentle for that to land. 4.6g is the new value. Under the bicycle model
+ * this same number is what makes trail-braking loosen the rear for real
+ * (see CG_HEIGHT below), not because anything here says so directly.
  */
 export const BRAKE_G = 4.6
 /** Automatic braking into a section stop, in g. */
@@ -83,8 +114,13 @@ export const STOP_BRAKE_G = 5
 const BRAKE_DECEL = BRAKE_G * G
 const STOP_DECEL = STOP_BRAKE_G * G
 
-/** Lateral grip available, in m/s^2. */
-const GRIP = GRIP_G * G
+/**
+ * Reference lateral grip, in m/s^2. No longer a hard cap the sim enforces
+ * directly (see GRIP_G below) -- kept only as a normalising figure for the
+ * roll-lean cosmetic and the advisory `cornerSpeed` helper the section-stop
+ * lookahead AI uses to decide when to lift.
+ */
+const NOMINAL_GRIP = GRIP_G * G
 
 // --- gearbox ---
 
@@ -109,25 +145,70 @@ const GEAR_TOP: number[] = (() => {
   return out
 })()
 
-// --- steering ---
+// --- bicycle model (Block H) ---
 
-const STEER_ACCEL = 26
-const STEER_RETURN = 18
-const STEER_MAX_V = 8
-/** Road speed at which steering reaches full authority. */
-const STEER_GRIP_SPEED = 20
+/** Wheelbase, metres. CG_TO_FRONT + CG_TO_REAR must sum to this. */
+const WHEELBASE = 2.6
+/** CG to front axle, metres. Closer to the front than the rear: combined
+ * with the rear's higher cornering stiffness below, the car is stable
+ * (understeering) at the limit by default, and needs braking or the
+ * handbrake to load it into oversteer, not a hair-trigger. */
+const CG_TO_FRONT = 1.1
+const CG_TO_REAR = 1.5
+/** CG height, metres. Not measured (there is nothing to measure it from);
+ * a plausible low sports-car figure, and the one number in this model with
+ * no better source than "reasonable". Combined with BRAKE_G it is what
+ * makes trail-braking loosen the rear -- see the weight-transfer comment
+ * below for how directly that follows from this single value. */
+const CG_HEIGHT = 0.5
+
+/** Front/rear tyre cornering stiffness, N per radian of slip angle. */
+const FRONT_CORNERING_STIFFNESS = 80000
+const REAR_CORNERING_STIFFNESS = 85000
+
+/** Front wheel steering limit and how fast the actuator reaches a new target. */
+const MAX_STEER_DEG = 32
+const MAX_STEER_RAD = MAX_STEER_DEG * DEG
+const STEER_RESPONSE = 8
 
 /**
- * How hard understeer pushes the car wide, and how much speed it scrubs.
- *
- * Tuned against the one lift corner: R115 flat out at 85 m/s asks for 62.8
- * m/s^2 of lateral grip against the 44.1 available, so the excess is 42% of
- * grip. That drifts the car about 2.5 m/s sideways and scrubs about 4.7 m/s^2,
- * which is enough to reach the kerb from the middle of the road over the
- * corner. The corner is flat out below about 71 m/s, so the lift is real.
+ * Yaw moment of inertia, kg*m^2. Not measured either: `MASS * a * b` is the
+ * standard stand-in when the real figure (mass distribution integrated over
+ * the whole body) is unavailable, equivalent to assuming a radius of
+ * gyration of sqrt(a*b) -- a common simplification in lightweight vehicle
+ * sims, not a real spec number.
  */
-const DRIFT_GAIN = 6
-const SCRUB_K = 0.25
+const YAW_INERTIA = MASS * CG_TO_FRONT * CG_TO_REAR
+
+/**
+ * Below this road speed, steering blends from the dynamic (slip-angle) tyre
+ * model toward a no-slip kinematic turn instead. A stationary tyre cannot
+ * build a meaningful slip angle -- the atan2 in alphaFront/alphaRear stays
+ * well-defined (see the 0.1 floor below) but the FORCE it would imply at
+ * v=0 is not physical, so cornering stiffness itself is scaled down to
+ * nothing at rest and a pure Ackermann yaw rate (vLong * tan(steer) /
+ * WHEELBASE, no slip, no forces) takes over instead. This is what stops a
+ * standing start from being able to slide sideways, and it is also what
+ * lets reverse steer at all despite skipping the dynamic model entirely.
+ */
+const STEER_GRIP_SPEED = 20
+
+/** How much the handbrake multiplies rear cornering stiffness AND the
+ * rear's peak grip budget by. A locked/skidding wheel has both a much
+ * flatter slip-angle response and a lower peak friction than a rolling one,
+ * so both are scaled, not just one. */
+const HANDBRAKE_REAR_GRIP = 0.25
+
+/** Floor on either axle's load, as a fraction of its own static value.
+ * BRAKE_G is aggressive enough (4.6g) that the raw weight-transfer term can
+ * exceed the rear's entire static load under hard braking; a real
+ * suspension runs out of travel long before that, so this stands in for
+ * that limit rather than letting the load (and the grip budget derived
+ * from it) go to zero or negative. */
+const MIN_LOAD_FRACTION = 0.2
+
+const STATIC_FRONT_LOAD = MASS * G * (CG_TO_REAR / WHEELBASE)
+const STATIC_REAR_LOAD = MASS * G * (CG_TO_FRONT / WHEELBASE)
 
 /**
  * How fast the car eases back off the kerb when nobody is steering, in m/s.
@@ -135,113 +216,42 @@ const SCRUB_K = 0.25
  * Lateral speed decays but lateral POSITION does not recentre, which is the
  * right call for a line the reader chose. It is the wrong call for a line
  * understeer chose: without this, one moment of running wide parks the car on
- * the kerb for the rest of the lap and the rumble never stops. Measured in the
- * sim: 15 seconds of continuous kerb per lap before this existed.
+ * the kerb for the rest of the lap and the rumble never stops.
  *
  * It only pulls while a wheel is actually over the kerb, so any line on the
- * asphalt is still held exactly.
+ * asphalt is still held exactly. Unrelated to tyre physics -- this is a
+ * track-boundary/assist feature, same role as STEER_LIMIT below, not part
+ * of what makes the car drift or grip.
  */
 const KERB_RETURN = 1.5
-
-/**
- * How far inside the kerb the return settles. Without the margin the pull
- * stops exactly on the trigger threshold, the outer wheel stays in contact,
- * and the rumble runs forever anyway: measured at 15.01s per lap either way.
- */
+/** How far inside the kerb the return settles, so the pull does not stop
+ * exactly on the trigger threshold and run forever right at the edge. */
 const KERB_CLEARANCE = 0.6
 
-// --- drifting (Block F) ---
+// --- drift classification (scoring/audio/visuals only, not physics) ---
 
-/** Handbrake only breaks rear traction above this speed. Below it the wheels
- * are already slow enough that "breaking traction" reads as nothing at all. */
+/** Below this speed a slide does not read as "drifting" for the score/audio/
+ * tyre-smoke gates -- a real slide at walking pace does not read as one
+ * either. Plays no part in whether the tyres actually lose grip. */
 const DRIFT_MIN_SPEED = 60 / 3.6
-
-/** The slip angle a drift builds toward, in degrees, before A/D modulation. */
-const SLIP_BASE_DEG = 12
-/** How much A/D can push the target up or down from the base, in degrees.
- * Steering into the slide tightens it toward SLIP_BASE_DEG + this; steering
- * against it loosens the car back toward straight. */
-const SLIP_MODULATE_DEG = 8
+/** Degrees of (derived) slip angle above which the classification flips on. */
+const DRIFT_CLASSIFY_DEG = 6
+/** Clamp applied to the DERIVED slip angle before it reaches the UI, audio
+ * squeal curve or score formula -- a wild spin can transiently imply a slip
+ * angle far past what those consumers expect (the squeal curve especially),
+ * so this bounds the reported number. The underlying vLat/yaw physics are
+ * never clamped by this; only what gets reported is. */
 const SLIP_MAX_DEG = 20
-
-/** How fast the slip angle builds toward its target while the handbrake is
- * held, per second. No overshoot on the way in: the car settles into a slide,
- * it does not snap into one. */
-const SLIP_BUILD_RATE = 4
-
-/**
- * Recovery on release is a lightly underdamped spring, not a plain decay,
- * so the nose swings very slightly past straight before settling: "a small
- * overshoot so the car feels weighted", per the brief. Critical damping at
- * this spring constant is 2*sqrt(90) =~ 19; 9 sits comfortably under that.
- */
-const SLIP_SPRING_K = 90
-const SLIP_DAMPING = 9
-
-/** Degrees below which a recovering slip just snaps to zero, so it does not
- * ring forever at a fraction of a degree. */
-const SLIP_SETTLE_DEG = 0.05
-const SLIP_SETTLE_VEL = 0.5
-
-/** How much the slide itself pushes the car sideways, layered on top of
- * whatever A/D is already doing through the normal steer model. */
-const DRIFT_LATERAL_K = 0.06
-/** How much holding a slide scrubs speed: style, not a shortcut. */
-const DRIFT_SCRUB_K = 0.15
 /** Score per (degree of slip * m/s of speed * second). Arbitrary, tuned only
  * so the popup shows a few hundred points for a good corner, not four digits. */
 const DRIFT_SCORE_K = 1
-
-/**
- * Natural (unforced) oversteer, added after the first drift pass shipped
- * with only the SPACE-forced version: turning in hard while lifting or
- * braking shifts weight off the rear axle, and the tail steps out on its
- * own, same as a real car trail-braking into a corner. SPACE still forces a
- * slide anywhere, at the larger SLIP_* range above; this is the smaller,
- * cornering-only range that needs no handbrake at all.
- */
-const NATURAL_STEER_THRESHOLD = 0.5
-const NATURAL_CURVATURE_THRESHOLD = 1e-3
-const NATURAL_SLIP_BASE_DEG = 7
-const NATURAL_SLIP_MODULATE_DEG = 6
-const NATURAL_SLIP_MAX_DEG = 14
-
-/**
- * Block G: GRIP -> INITIATE -> SLIDE -> RECOVER.
- *
- * The first drift pass conflated "what starts a slide" with "what keeps it
- * going", so pressing W (the natural trigger required lift-or-brake) or
- * holding S (which unconditionally overrode throttle at full 4.6g) both
- * ended it immediately. Real drifting is initiated by a lift or a brake and
- * SUSTAINED by throttle, so the two need to be different conditions, which
- * means the sim needs to know which one it is in.
- */
-export type DriftPhase = 'grip' | 'initiate' | 'slide' | 'recover'
-
-/** Slip angle at which an initiating slide counts as properly established. */
-const SLIDE_ENTER_DEG = 3
-/** Throttle during a slide drives at reduced traction, not full grip -- the
- * rear is already stepping out, so not all of the power goes to forward bite. */
-const SLIDE_THROTTLE_TRACTION = 0.7
-/** How much sustaining throttle raises the target slip angle during a slide:
- * power oversteer, the tail stepping out further under load. */
-const SLIDE_THROTTLE_SLIP_BOOST_DEG = 4
-/** A lift with no brake, mid-slide, eases the target down instead of holding
- * it, so the car drifts wide rather than staying pinned at full angle. */
-const SLIDE_LIFT_TARGET_FRACTION = 0.55
-/** S during a slide is a brake MODULATOR, not the full manual-braking rate:
- * about 1.5g, so a slide never turns into a stop the way 4.6g would. */
-const SLIDE_BRAKE_G = 1.5
-/** Countersteering during RECOVER (steering opposite the slip's own sign)
- * speeds the spring back to straight instead of just waiting it out. */
-const COUNTERSTEER_RECOVER_BOOST = 2.2
 
 /** Smoothing for the pitch and roll readouts, per second. */
 const LEAN_SMOOTH = 9
 /** Longitudinal acceleration that reads as full pitch. */
 const PITCH_REF = STOP_DECEL
 /** Lateral acceleration that reads as full roll. */
-const ROLL_REF = GRIP
+const ROLL_REF = NOMINAL_GRIP
 
 /**
  * Guard for every divisor taken from frame time.
@@ -257,10 +267,24 @@ export interface CarState {
   s: number
   /** Lateral offset from the racing line. Positive is the driver left. */
   d: number
-  /** Forward speed, m/s. */
+  /** Longitudinal speed, vehicle frame, m/s. Always >= 0; direction (forward
+   * vs reverse) is tracked separately by `reversing`. */
   v: number
-  /** Lateral speed, m/s. */
-  vd: number
+  /** Lateral speed, vehicle frame, m/s. Positive is the driver left, same
+   * sign convention as `d`. Zero unless the tyres are actually generating a
+   * net sideways force. */
+  vLat: number
+  /** Vehicle heading, world radians, same atan2(tx, tz) convention as the
+   * track tangent. The one and only source of which way the car body
+   * points -- nothing else in this file or the renderer computes a second,
+   * competing heading. */
+  yaw: number
+  /** Yaw angular velocity, rad/s. */
+  yawRate: number
+  /** Actual front-wheel steering angle, radians, signed the same way as
+   * CarInput.steer (positive is toward the driver left). Smoothly chases
+   * the A/D target rather than snapping to it. */
+  steeringAngle: number
   gear: number
   rpm: number
   /** 1 at the line, 0 at the CONTACT marker. */
@@ -271,7 +295,9 @@ export interface CarState {
   wheelAngle: number
   /** Signed longitudinal acceleration, m/s^2. Negative under braking. */
   accelLong: number
-  /** Signed lateral acceleration, m/s^2. */
+  /** Signed lateral acceleration, m/s^2, in the vehicle frame (positive is
+   * the driver left), including the yaw-rate coupling term -- this is the
+   * real number a driver would feel, not a cosmetic estimate. */
   accelLat: number
   /** Smoothed -1..1 pitch target. Positive is nose down. */
   pitch: number
@@ -279,23 +305,21 @@ export interface CarState {
   roll: number
   /** True while any brake is applied, for the brake lights. */
   braking: boolean
-  /** True while understeer is pushing the car wide. */
+  /** True while the front axle is being asked for more lateral force than
+   * its grip budget can supply this frame -- the tyres are saturated and
+   * the car is running wide regardless of input. */
   understeer: boolean
   /** Total distance travelled, metres. Laps are not counted anywhere in the UI. */
   travelled: number
-  /** Slip angle, degrees. Signed: the sign is the direction the tail has
-   * stepped out. Body yaw is tangent heading plus this, per the brief. */
+  /** Slip angle, degrees, signed. DERIVED every step from the actual
+   * vLat/v, per atan2(vLat, max(|v|, 0.1)) -- never an independently
+   * animated value. Clamped to +/-SLIP_MAX_DEG for its UI/audio/score
+   * consumers only. */
   slipAngle: number
-  /** Internal: rate of change of slipAngle, degrees/second. Carries momentum
-   * from the build phase into the release spring so the recovery starts from
-   * the slide's actual speed rather than from rest. */
-  slipVel: number
-  /** True during 'initiate' or 'slide', for scoring, audio and the
-   * tyre-smoke/skid-mark visuals to gate on -- they don't need the
-   * grip/initiate/slide/recover distinction, just "is something happening". */
+  /** True while |slipAngle| clears DRIFT_CLASSIFY_DEG above DRIFT_MIN_SPEED
+   * -- a classification for scoring, audio and the tyre-smoke/skid-mark
+   * visuals to gate on, not something any physics reads back. */
   drifting: boolean
-  /** GRIP -> INITIATE -> SLIDE -> RECOVER (Block G). */
-  driftPhase: DriftPhase
   /** Cumulative drift score this session. Never resets on its own; the UI
    * layer owns comparing it against a best score in localStorage. */
   driftScore: number
@@ -316,7 +340,9 @@ export interface CarState {
 export interface CarInput {
   throttle: boolean
   brake: boolean
-  /** -1 to 1. Positive steers toward the driver left. */
+  /** -1 to 1. Positive steers toward the driver left. Sets a TARGET
+   * front-wheel angle (see CarState.steeringAngle) -- never applied to the
+   * body directly. */
   steer: number
   /**
    * Arc length of the stop the car is braking for, or null while free driving.
@@ -325,15 +351,22 @@ export interface CarInput {
   targetS: number | null
   /** False during the lights, a warp, or while stopped: A and D are ignored. */
   steerEnabled: boolean
-  /** SPACE. Ignored below DRIFT_MIN_SPEED and whenever steerEnabled is false,
-   * the same gate the rest of manual control already uses. */
+  /** SPACE. Reduces rear tyre grip (see HANDBRAKE_REAR_GRIP) rather than
+   * forcing any particular slip angle -- whether that actually produces a
+   * slide depends on speed and how hard the front is turned in, same as a
+   * real handbrake. */
   handbrake: boolean
 }
 
 export interface TrackQuery {
   length: number
-  /** Signed curvature at an arc length, 1/metres. */
+  /** Signed curvature at an arc length, 1/metres. Not read by the physics
+   * itself any more (heading alone is enough to resolve velocity into s/d);
+   * kept on the interface for advisory helpers like `cornerSpeed`. */
   curvatureAt(s: number): number
+  /** Track tangent heading at an arc length, radians, atan2(tx, tz)
+   * convention. What the bicycle model's yaw is measured against. */
+  headingAt(s: number): number
 }
 
 export function createCarState(s = 0): CarState {
@@ -341,7 +374,14 @@ export function createCarState(s = 0): CarState {
     s,
     d: 0,
     v: 0,
-    vd: 0,
+    vLat: 0,
+    // NaN is a sentinel: stepCar snaps this to the track heading on its
+    // first call, the same way the old visualHeading used to snap on its
+    // first frame. Anything before that first call has no meaningful
+    // heading to report.
+    yaw: Number.NaN,
+    yawRate: 0,
+    steeringAngle: 0,
     gear: 0,
     rpm: IDLE_RPM,
     fuel: 1,
@@ -355,9 +395,7 @@ export function createCarState(s = 0): CarState {
     understeer: false,
     travelled: 0,
     slipAngle: 0,
-    slipVel: 0,
     drifting: false,
-    driftPhase: 'grip',
     driftScore: 0,
     progress: s,
     reversing: false,
@@ -383,6 +421,27 @@ function forwardGap(a: number, b: number, length: number) {
 function wrapMod(x: number, length: number) {
   const m = x % length
   return m < 0 ? m + length : m
+}
+
+/** Wraps an angle into (-PI, PI]. */
+function normalizeAngle(a: number): number {
+  let x = a % (Math.PI * 2)
+  if (x > Math.PI) x -= Math.PI * 2
+  if (x < -Math.PI) x += Math.PI * 2
+  return x
+}
+
+/**
+ * Scales (fx, fy) down to the boundary of a circle of radius maxForce if it
+ * falls outside it, preserving direction. The combined-slip constraint every
+ * axle is subject to: cornering eats into how much braking/acceleration
+ * force is left, and vice versa, exactly like a real tyre's friction circle.
+ */
+function clampToCircle(fx: number, fy: number, maxForce: number): [number, number] {
+  const mag = Math.hypot(fx, fy)
+  if (mag <= maxForce || mag < 1e-9) return [fx, fy]
+  const scale = maxForce / mag
+  return [fx * scale, fy * scale]
 }
 
 /**
@@ -430,12 +489,30 @@ export function stepCar(
   const vBefore = state.v
   let arrived = false
 
-  // --- longitudinal ---
+  if (Number.isNaN(state.yaw)) state.yaw = track.headingAt(state.s)
 
-  // Reverse engagement (Block F / F5): holding S while essentially stopped,
-  // with no throttle, engages reverse after REVERSE_ENGAGE_TIME. Only while
-  // free driving -- there is never a stop target to reverse out of, and the
-  // auto-brake already owns the car whenever one is set.
+  // Steering actuator: A/D set a TARGET front-wheel angle; this is the only
+  // place `steeringAngle` moves, and it always chases the target rather than
+  // snapping to it. Nothing below this line ever rotates the body directly.
+  const steerInput = input.steerEnabled ? clamp(input.steer, -1, 1) : 0
+  const targetSteer = steerInput * MAX_STEER_RAD
+  state.steeringAngle += (targetSteer - state.steeringAngle) * (1 - Math.exp(-STEER_RESPONSE * step))
+
+  // Weight transfer, lagged one step behind accelLong (last frame's value,
+  // still sitting in state.accelLong from the tail end of the previous
+  // call). Solving this simultaneously with this frame's own forces would
+  // need a much heavier iterative or closed-form solution for a one-frame
+  // difference a real suspension's own settling time would swallow anyway.
+  //
+  // transfer > 0 under braking (accelLong < 0): front load rises, rear
+  // falls -- the sign is chosen for that outcome directly, not copied from
+  // a textbook convention.
+  const transfer = (-MASS * state.accelLong * CG_HEIGHT) / WHEELBASE
+  const frontLoad = Math.max(STATIC_FRONT_LOAD * MIN_LOAD_FRACTION, STATIC_FRONT_LOAD + transfer)
+  const rearLoad = Math.max(STATIC_REAR_LOAD * MIN_LOAD_FRACTION, STATIC_REAR_LOAD - transfer)
+
+  // --- reverse engagement (unchanged: purely longitudinal, no tyre model
+  // involved in the decision) ---
   if (!state.reversing && input.targetS === null) {
     if (state.v < REVERSE_ENGAGE_SPEED && input.brake && !input.throttle) {
       state.reverseHoldTime += step
@@ -452,10 +529,11 @@ export function stepCar(
   let advance: number
 
   if (state.reversing) {
-    // The pedal you already have your foot near is the one that moves you
-    // the way you are facing: S is the reverse "gas", W brakes it, and once
-    // W has fully stopped the reverse roll control hands back to forward
-    // drive, so the very next W is a normal launch rather than a lurch.
+    // Reverse is a 25 km/h creep, not a scenario worth a tyre-slip model.
+    // Steering here is plain kinematic (Ackermann) geometry -- no slip
+    // angle, no lateral force -- which is both the physically correct model
+    // at this speed and the simplest one, and it is what lets reverse
+    // steer at all without pulling in the dynamic model above.
     let rForce = -ROLL_DRAG
     if (input.throttle) {
       rForce = -MASS * BRAKE_DECEL
@@ -471,65 +549,156 @@ export function stepCar(
       state.reversing = false
       state.v = 0
     }
-    advance = -state.v * step
-    // No gearbox in reverse: readouts below skip updateGearbox entirely
-    // while this flag is set, so these three are the whole picture.
     state.gear = REVERSE_GEAR
     state.rpm = IDLE_RPM
     state.shiftCut = 0
-  } else {
-    const drag = DRAG_K * state.v * state.v + (state.v > 0.1 ? ROLL_DRAG : 0)
-    let force = -drag
 
-    // Automatic braking into a section stop. Braking begins v^2 / (2a)
-    // before the marker, and the rate is recomputed from the distance
-    // remaining every step, so the car lands on the marker rather than near it.
+    // Velocity points backward while reversing, which flips which way a
+    // given wheel angle turns the car relative to forward driving -- same
+    // as backing a real car out of a spot.
+    state.yawRate = (state.v * Math.tan(state.steeringAngle)) / WHEELBASE
+    state.yaw = normalizeAngle(state.yaw + state.yawRate * step)
+    state.vLat = 0
+
+    const trackHeading = track.headingAt(state.s)
+    const theta = normalizeAngle(state.yaw - trackHeading)
+    const vLongSigned = -state.v
+    const vS = vLongSigned * Math.cos(theta) - state.vLat * Math.sin(theta)
+    const vD = vLongSigned * Math.sin(theta) + state.vLat * Math.cos(theta)
+    advance = vS * step
+    state.s = wrapMod(state.s + advance, track.length)
+    state.d = clamp(state.d + vD * step, -STEER_LIMIT, STEER_LIMIT)
+    state.accelLat = 0
+    state.understeer = false
+  } else {
+    // --- forward driving: the 2-DOF bicycle model ---
+    const trackHeading = track.headingAt(state.s)
+
+    // See STEER_GRIP_SPEED's own comment: this both scales down the dynamic
+    // tyre forces near a standstill and blends the resulting yaw rate
+    // toward a no-slip kinematic turn, so a standing start cannot slide.
+    const authority = clamp(state.v / STEER_GRIP_SPEED, 0, 1)
+
+    const yawRateOld = state.yawRate
+    const vLatOld = state.vLat
+    const vLongOld = state.v
+    const vLongSafe = Math.max(vLongOld, 0.1)
+
+    const alphaFront = Math.atan2(vLatOld + CG_TO_FRONT * yawRateOld, vLongSafe) - state.steeringAngle
+    const alphaRear = Math.atan2(vLatOld - CG_TO_REAR * yawRateOld, vLongSafe)
+
+    const rearGripMult = input.handbrake ? HANDBRAKE_REAR_GRIP : 1
+    const Cf = FRONT_CORNERING_STIFFNESS * authority
+    const Cr = REAR_CORNERING_STIFFNESS * authority * rearGripMult
+
+    const FyFrontRaw = -Cf * alphaFront
+    const FyRearRaw = -Cr * alphaRear
+
+    const maxForceFront = frontLoad * GRIP_G * G
+    const maxForceRear = rearLoad * rearGripMult * GRIP_G * G
+
+    // Longitudinal demand. Automatic braking into a section-stop marker
+    // overrides throttle/brake entirely, same as before (an assistive,
+    // scripted deceleration, not part of the tyre model); otherwise the two
+    // pedals are additive, so left-foot braking is valid input.
     let autoBrake = 0
     if (input.targetS !== null) {
       const remaining = forwardGap(state.s, input.targetS, track.length)
-      const needed = (state.v * state.v) / (2 * STOP_DECEL)
+      const needed = (vLongOld * vLongOld) / (2 * STOP_DECEL)
       if (remaining <= needed || remaining < 1) {
-        autoBrake = remaining > 0.01 ? (state.v * state.v) / (2 * remaining) : STOP_DECEL
+        autoBrake = remaining > 0.01 ? (vLongOld * vLongOld) / (2 * remaining) : STOP_DECEL
         autoBrake = Math.min(autoBrake, STOP_DECEL * 4)
       }
     }
 
+    let brakeForce = 0
+    let engineForce = 0
     if (autoBrake > 0) {
-      force = -MASS * autoBrake - drag
+      brakeForce = MASS * autoBrake
       state.braking = true
     } else {
-      // Throttle and brake are ADDITIVE, not an either/or: W and S held
-      // together is valid (left-foot braking), and a slide's own brake
-      // modulator must never fully override the throttle sustaining it.
-      // `driftPhase` here is still last frame's value (this frame's phase
-      // update happens below, in the lateral section) -- a one-frame lag
-      // that does not matter at simulation rates.
-      let netForce = 0
       state.braking = false
       if (input.brake) {
-        const brakeG = state.driftPhase === 'slide' ? SLIDE_BRAKE_G : BRAKE_G
-        netForce -= MASS * brakeG * G
+        brakeForce = MASS * BRAKE_G * G
         state.braking = true
       }
       if (input.throttle && state.shiftCut <= 0) {
-        const tractionFraction = state.driftPhase === 'slide' ? SLIDE_THROTTLE_TRACTION : 1
-        netForce += tractionAt(state.v) * tractionFraction
+        engineForce = tractionAt(vLongOld)
       }
-      force = netForce - drag
     }
+    // Brake bias follows the current weight distribution, same as a real
+    // proportioning valve: the more heavily loaded axle does more of the
+    // stopping. The engine only ever drives the rear axle.
+    const totalLoad = frontLoad + rearLoad
+    const FxFrontRaw = -brakeForce * (frontLoad / totalLoad)
+    const FxRearRaw = engineForce - brakeForce * (rearLoad / totalLoad)
 
-    state.v += (force / MASS) * step
-    if (state.v < 0) state.v = 0
-    if (state.v > TOP_SPEED) state.v = TOP_SPEED
+    const [FxFront, FyFront] = clampToCircle(FxFrontRaw, FyFrontRaw, maxForceFront)
+    const [FxRear, FyRear] = clampToCircle(FxRearRaw, FyRearRaw, maxForceRear)
 
-    advance = state.v * step
+    // Understeer: the front axle was asked for more force (braking and/or
+    // cornering combined) than its grip budget could supply this frame, so
+    // clampToCircle actually cut it down. Not a curvature check -- a direct
+    // read of whether the tyres saturated.
+    state.understeer = Math.hypot(FxFrontRaw, FyFrontRaw) > maxForceFront + 1e-6
+
+    const drag = DRAG_K * vLongOld * vLongOld + (vLongOld > 0.1 ? ROLL_DRAG : 0)
+    const aLong = (FxFront + FxRear - drag) / MASS
+    const newVLong = clamp(vLongOld + aLong * step, 0, TOP_SPEED)
+
+    const cosSteer = Math.cos(state.steeringAngle)
+    const yawMoment = CG_TO_FRONT * FyFront * cosSteer - CG_TO_REAR * FyRear
+    const yawAccel = yawMoment / YAW_INERTIA
+    // The -vLongOld*yawRateOld term is the standard bicycle-model coupling
+    // from working in a ROTATING (vehicle) frame: without it a car turning
+    // at constant slip angle would show zero lateral acceleration, which is
+    // wrong -- it is still accelerating centripetally even at a steady slide.
+    const latAccelVehicle = (FyFront * cosSteer + FyRear) / MASS - vLongOld * yawRateOld
+
+    const yawRateKinematic = (vLongOld * Math.tan(state.steeringAngle)) / WHEELBASE
+    let newYawRate = yawRateOld + yawAccel * step
+    newYawRate = newYawRate * authority + yawRateKinematic * (1 - authority)
+    const newVLat = vLatOld + latAccelVehicle * step
+    const newYaw = normalizeAngle(state.yaw + newYawRate * step)
+
+    // Resolve the vehicle-frame velocity into the track's own basis. This is
+    // the ONLY place s/d are driven by velocity rather than by an artificial
+    // per-frame nudge, and it is symmetric: a car pointed off the track
+    // tangent (understeer running wide, a slide, anything) naturally moves
+    // away from the racing line here, with no separate "push it wide" term
+    // anywhere in this file.
+    const theta = normalizeAngle(newYaw - trackHeading)
+    const vS = newVLong * Math.cos(theta) - newVLat * Math.sin(theta)
+    const vD = newVLong * Math.sin(theta) + newVLat * Math.cos(theta)
+
+    let dNext = state.d + vD * step
+    // Nudges the car back off the kerb only while nobody is actively
+    // steering, so a deliberate line near the edge is never fought. A
+    // track-boundary assist, not tyre physics.
+    const kerbTarget = RUMBLE_D - KERB_CLEARANCE
+    if (steerInput === 0 && Math.abs(dNext) > kerbTarget) {
+      const pull = Math.min(KERB_RETURN * step, Math.abs(dNext) - kerbTarget)
+      dNext -= Math.sign(dNext) * pull
+    }
+    const clampedD = clamp(dNext, -STEER_LIMIT, STEER_LIMIT)
+    // Pinned against the limit: drop the stored lateral momentum rather than
+    // save it up to be released the moment the car comes off the edge.
+    const clampedVLat = clampedD !== dNext ? 0 : newVLat
+
+    advance = vS * step
+    state.v = newVLong
+    state.vLat = clampedVLat
+    state.yawRate = newYawRate
+    state.yaw = newYaw
+    state.d = clampedD
+    state.s = wrapMod(state.s + advance, track.length)
+    state.accelLat = latAccelVehicle
   }
 
-  state.s = wrapMod(state.s + advance, track.length)
   state.travelled += advance
   // Fuel invariant 3's input: forward-only progress, floored at 0 so
-  // reversing past the last refuel point cannot dip it negative and cannot,
-  // by construction, ever raise fuel back up either (see below).
+  // reversing (or spinning enough that vS goes briefly negative) cannot dip
+  // it below 0 and cannot, by construction, ever raise fuel back up either.
   state.progress = Math.max(0, state.progress + advance)
 
   if (!state.reversing && input.targetS !== null) {
@@ -543,174 +712,25 @@ export function stepCar(
     }
   }
 
-  // --- lateral ---
-
-  const curvature = track.curvatureAt(state.s)
-  const steer = input.steerEnabled ? clamp(input.steer, -1, 1) : 0
-
-  if (steer !== 0) {
-    state.vd = clamp(state.vd + steer * STEER_ACCEL * step, -STEER_MAX_V, STEER_MAX_V)
-  } else {
-    // Decays lateral speed but does not recentre: the reader picks a line and
-    // the car holds it.
-    const decay = STEER_RETURN * step
-    state.vd = Math.abs(state.vd) <= decay ? 0 : state.vd - Math.sign(state.vd) * decay
-  }
-
-  // Steering authority follows road speed, so the car cannot slide sideways
-  // off a standing start.
-  const authority = Math.min(1, state.v / STEER_GRIP_SPEED)
-  let dNext = state.d + state.vd * authority * step
-
-  // Understeer. Heading always follows the tangent, so the consequence of
-  // carrying too much speed into a corner is being pushed wide, never a spin.
-  // The loop turns the same way at every corner, so the outside of the bend is
-  // whichever side the curvature sign points at.
-  const demand = state.v * state.v * Math.abs(curvature)
-  const excess = demand - GRIP
-  state.understeer = excess > 0
-  if (excess > 0) {
-    const drift = (excess / GRIP) * DRIFT_GAIN
-    dNext += Math.sign(curvature) * drift * step
-    state.v = Math.max(0, state.v - SCRUB_K * excess * step)
-  }
-
-  // Drifting: GRIP -> INITIATE -> SLIDE -> RECOVER (Block G). Slip angle is
-  // its own accumulator, independent of d/vd, and only ever feeds a lateral
-  // NUDGE into dNext -- which still passes through the kerb return and the
-  // STEER_LIMIT clamp below like everything else, so a drift can push the
-  // car around but never off the track.
-  const slipBefore = state.slipAngle
-  const turningHard = Math.abs(steer) >= NATURAL_STEER_THRESHOLD
-  const cornering = Math.abs(curvature) > NATURAL_CURVATURE_THRESHOLD
-  const aboveMinSpeed = state.v >= DRIFT_MIN_SPEED
-  const liftingOrBraking = input.brake || !input.throttle
-  // What INITIATEs a slide: SPACE anywhere, or a real weight-transfer
-  // trigger (braking or lifting) while actually turning into a corner.
-  // Never gated on `!input.handbrake` the way the first pass had it, since
-  // that only decided which slip RANGE applies, not whether a slide starts.
-  const canInitiate =
-    input.steerEnabled &&
-    aboveMinSpeed &&
-    (input.handbrake || (liftingOrBraking && turningHard && cornering))
-  // What SUSTAINS an established slide: throttle now KEEPS it going instead
-  // of ending it, which is the actual bug fix here. A slide also survives
-  // on the handbrake alone, or on continued brake-and-steer.
-  const canSustain =
-    input.steerEnabled &&
-    aboveMinSpeed &&
-    (input.handbrake || input.throttle || (input.brake && turningHard))
-
-  switch (state.driftPhase) {
-    case 'grip':
-      if (canInitiate) state.driftPhase = 'initiate'
-      break
-    case 'initiate':
-      if (!aboveMinSpeed || !canSustain) state.driftPhase = 'recover'
-      else if (Math.abs(state.slipAngle) >= SLIDE_ENTER_DEG) state.driftPhase = 'slide'
-      break
-    case 'slide':
-      if (!aboveMinSpeed || !canSustain) state.driftPhase = 'recover'
-      break
-    case 'recover':
-      if (Math.abs(state.slipAngle) < SLIP_SETTLE_DEG) state.driftPhase = 'grip'
-      else if (canInitiate) state.driftPhase = 'initiate'
-      break
-  }
-
-  const building = state.driftPhase === 'initiate' || state.driftPhase === 'slide'
-  if (building) {
-    // Which way the tail steps out: the corner's own direction if there is
-    // one, otherwise whichever way the driver is already steering, otherwise
-    // whatever the car was already doing (so a drift started on a straight
-    // does not have to pick a side from nothing).
-    const driftDir =
-      Math.abs(curvature) > 1e-6
-        ? Math.sign(curvature)
-        : steer !== 0
-          ? Math.sign(steer)
-          : state.slipAngle !== 0
-            ? Math.sign(state.slipAngle)
-            : 1
-    // Steering INTO the slide (same sign as driftDir) tightens it toward the
-    // max; countersteering loosens it back toward straight. This is the "A/D
-    // modulates it" the brief asks for. The forced (SPACE) range is wider
-    // than the natural one: a handbrake commits harder than trail-braking.
-    const steerAlign = steer * driftDir
-    const base = input.handbrake ? SLIP_BASE_DEG : NATURAL_SLIP_BASE_DEG
-    const modulate = input.handbrake ? SLIP_MODULATE_DEG : NATURAL_SLIP_MODULATE_DEG
-    const maxDeg = input.handbrake ? SLIP_MAX_DEG : NATURAL_SLIP_MAX_DEG
-    let targetMag = clamp(base + steerAlign * modulate, 0, maxDeg)
-    if (state.driftPhase === 'slide') {
-      // Throttle raises the target (power oversteer, the tail stepping out
-      // further under load); a lift with no brake eases it down instead of
-      // holding it, so the car drifts wide rather than staying pinned.
-      if (input.throttle) targetMag = Math.min(maxDeg, targetMag + SLIDE_THROTTLE_SLIP_BOOST_DEG)
-      else if (!input.brake) targetMag *= SLIDE_LIFT_TARGET_FRACTION
-    }
-    const target = driftDir * targetMag
-    const buildSmooth = 1 - Math.exp(-SLIP_BUILD_RATE * step)
-    state.slipAngle += (target - state.slipAngle) * buildSmooth
-  } else {
-    // RECOVER or GRIP: a lightly underdamped spring back to zero, so the
-    // nose swings very slightly past straight before settling rather than
-    // snapping back. Countersteering (steering opposite the slip's own
-    // sign) speeds the spring rather than fighting it.
-    const counterSteering = state.driftPhase === 'recover' && steer !== 0 && Math.sign(steer) !== Math.sign(state.slipAngle || steer)
-    const damping = SLIP_DAMPING * (counterSteering ? COUNTERSTEER_RECOVER_BOOST : 1)
-    const accel = -SLIP_SPRING_K * state.slipAngle - damping * state.slipVel
-    state.slipVel += accel * step
-    state.slipAngle += state.slipVel * step
-    if (Math.abs(state.slipAngle) < SLIP_SETTLE_DEG && Math.abs(state.slipVel) < SLIP_SETTLE_VEL) {
-      state.slipAngle = 0
-      state.slipVel = 0
-    }
-  }
-  if (building) state.slipVel = (state.slipAngle - slipBefore) / step
-  state.drifting = building
-
-  if (state.drifting) {
-    const slipRad = (state.slipAngle * Math.PI) / 180
-    dNext += Math.sin(slipRad) * state.v * step * DRIFT_LATERAL_K
-    state.v = Math.max(0, state.v - DRIFT_SCRUB_K * Math.abs(slipRad) * state.v * step)
-    state.driftScore += Math.abs(state.slipAngle) * state.v * DRIFT_SCORE_K * step
-  }
-
-  const kerbTarget = RUMBLE_D - KERB_CLEARANCE
-  if (steer === 0 && Math.abs(dNext) > kerbTarget) {
-    const pull = Math.min(KERB_RETURN * step, Math.abs(dNext) - kerbTarget)
-    dNext -= Math.sign(dNext) * pull
-  }
-
-  const clamped = clamp(dNext, -STEER_LIMIT, STEER_LIMIT)
-  // Pinned against the limit: drop the stored lateral momentum rather than
-  // save it up to be released the moment the car comes off the edge.
-  if (clamped !== dNext) state.vd = 0
-  const dBefore = state.d
-  state.d = clamped
-
-  // --- readouts ---
-
   // No gearbox in reverse: state.gear/rpm/shiftCut were already set directly
   // above, and GEAR_TOP[REVERSE_GEAR] is not a real index.
   if (!state.reversing) updateGearbox(state, step)
 
-  // Monotonic invariant (Block F): fuel is a function of forward PROGRESS
-  // (see above), never of raw `s` directly -- `s` wraps at the start/finish
-  // line, and reversing can walk it backward, either of which would read as
-  // free fuel off a fresh `1 - s/length`. The only real refuel is the
-  // explicit `fuel = 1` Car.tsx sets at CONTACT; everywhere else fuel can
-  // fall but never rise, which the outer `Math.min` guarantees even if
-  // `progress` itself is ever wrong.
   state.fuel = Math.min(state.fuel, clamp(1 - state.progress / track.length, 0, 1))
   // Wheels spin the way the car is actually travelling.
-  state.wheelAngle += (state.reversing ? -state.v : state.v) / WHEEL_RADIUS * step
+  state.wheelAngle += ((state.reversing ? -state.v : state.v) / WHEEL_RADIUS) * step
 
   state.accelLong = (state.v - vBefore) / step
-  // Lateral acceleration is the corner demand plus whatever the steering is
-  // doing, signed so a left-hand bend and a left flick lean the same way.
-  const lateralFromSteer = (state.d - dBefore) / step
-  state.accelLat = state.v * state.v * curvature + lateralFromSteer
+
+  // Slip angle is DERIVED here, after v/vLat have already settled for this
+  // frame -- never an independently animated variable. This is the true
+  // angle between where the car points and where it is actually going.
+  const slipRad = Math.atan2(state.vLat, Math.max(Math.abs(state.v), 0.1))
+  state.slipAngle = clamp(slipRad / DEG, -SLIP_MAX_DEG, SLIP_MAX_DEG)
+  state.drifting = Math.abs(state.slipAngle) > DRIFT_CLASSIFY_DEG && state.v > DRIFT_MIN_SPEED
+  if (state.drifting) {
+    state.driftScore += Math.abs(state.slipAngle) * state.v * DRIFT_SCORE_K * step
+  }
 
   const smooth = 1 - Math.exp(-LEAN_SMOOTH * step)
   const pitchTarget = clamp(-state.accelLong / PITCH_REF, -1, 1)
@@ -721,10 +741,12 @@ export function stepCar(
   return { arrived }
 }
 
-/** Fastest speed a corner of this curvature can be taken without drifting wide. */
+/** Fastest speed a corner of this curvature can be taken without drifting wide.
+ * Advisory only (used by the section-stop lookahead to decide when to lift) --
+ * the physics itself no longer enforces this as a hard cap. */
 export function cornerSpeed(curvature: number): number {
   const k = Math.abs(curvature)
-  return k < 1e-9 ? TOP_SPEED : Math.min(TOP_SPEED, Math.sqrt(GRIP / k))
+  return k < 1e-9 ? TOP_SPEED : Math.min(TOP_SPEED, Math.sqrt(NOMINAL_GRIP / k))
 }
 
 /** Distance needed to brake to rest from a speed, at the section-stop rate. */
