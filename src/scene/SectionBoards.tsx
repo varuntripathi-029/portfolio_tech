@@ -43,7 +43,11 @@ export function SectionBoards() {
             width: BOARD_WIDTH,
             height: BOARD_HEIGHT,
             uv: sectionBoardUV(i),
-            right: { x: fr.tx, z: fr.tz },
+            // See LedBoards.tsx's identical fix: the normal has to face back
+            // toward the track centre (-d), which flips with OUTSIDE_SIGN
+            // depending on this track's winding direction -- plain tangent
+            // only reads correctly for one winding.
+            right: { x: OUTSIDE_SIGN * fr.tx, z: OUTSIDE_SIGN * fr.tz },
           }
         }),
       ),

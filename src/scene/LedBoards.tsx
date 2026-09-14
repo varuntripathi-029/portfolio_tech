@@ -3,7 +3,7 @@ import * as THREE from 'three'
 import { buildBillboardGeometry } from './billboardGeometry'
 import { makeLedAtlas, ledCellUV, BOARD_ASPECT } from './ledIconAtlas'
 import { LED_BOARDS } from '../track/props'
-import { frameAt } from '../track/trackFrame'
+import { OUTSIDE_SIGN, frameAt } from '../track/trackFrame'
 
 /**
  * Height is the free dimension and width follows the atlas cell aspect. Never
@@ -34,8 +34,14 @@ export function LedBoards() {
             height: BOARD_HEIGHT,
             uv: ledCellUV(i),
             // Width runs along the track, so the face looks across it at the
-            // racing line rather than along the barrier.
-            right: { x: fr.tx, z: fr.tz },
+            // racing line rather than along the barrier. The board's normal
+            // (a 90deg rotation of `right`) has to face back toward the
+            // track centre, i.e. toward -d; which way that is in world terms
+            // depends on OUTSIDE_SIGN (which side of the loop is "outside"
+            // for THIS track's winding direction), not a fixed axis -- using
+            // plain tangent here read correctly only for one winding and
+            // mirrored for the other, which is what was happening.
+            right: { x: OUTSIDE_SIGN * fr.tx, z: OUTSIDE_SIGN * fr.tz },
           }
         }),
       ),
