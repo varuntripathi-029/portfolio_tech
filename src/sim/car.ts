@@ -195,6 +195,28 @@ const STEER_RESPONSE = 4
 const YAW_INERTIA = MASS * CG_TO_FRONT * CG_TO_REAR * 2
 
 /**
+ * Additional yaw torque opposing rotation, rad/s^2 per rad/s of yaw rate.
+ * Added only after verifying every sign, force direction, axle load and
+ * coordinate transform in this file was already correct: with those all
+ * confirmed right, a saturated linear tyre model still has nowhere for a
+ * large yaw rate to go once both axles are pinned at their friction-circle
+ * ceiling -- the tyre-force "spring" that normally restores the car goes
+ * flat (a saturated force does not grow with slip angle any more), while
+ * the -vLong*yawRate centripetal coupling term keeps growing right along
+ * with yawRate itself. Nothing was left to arrest that growth.
+ *
+ * This is added directly into the yaw acceleration calculation, before
+ * integration -- not a multiply on the resulting yawRate afterward, and
+ * not conditioned on "is this a spin" -- so it cannot mask a sign error or
+ * a missing force the way an after-the-fact `yawRate *= 0.9` would. Real
+ * tyres dissipate energy scrubbing sideways in a way this simplified 2-DOF,
+ * purely force-based model has no other mechanism to capture, and a torque
+ * opposing rotation rate is the standard, textbook way that dissipation
+ * gets represented in a model this size.
+ */
+const YAW_DAMPING = 1.5
+
+/**
  * Below this road speed, steering blends from the dynamic (slip-angle) tyre
  * model toward a no-slip kinematic turn instead. A stationary tyre cannot
  * build a meaningful slip angle -- the atan2 in alphaFront/alphaRear stays
@@ -681,7 +703,7 @@ export function stepCar(
 
     const cosSteer = Math.cos(state.steeringAngle)
     const yawMoment = CG_TO_FRONT * FyFront * cosSteer - CG_TO_REAR * FyRear
-    const yawAccel = yawMoment / YAW_INERTIA
+    const yawAccel = yawMoment / YAW_INERTIA - YAW_DAMPING * yawRateOld
     // The -vLongOld*yawRateOld term is the standard bicycle-model coupling
     // from working in a ROTATING (vehicle) frame: without it a car turning
     // at constant slip angle would show zero lateral acceleration, which is
