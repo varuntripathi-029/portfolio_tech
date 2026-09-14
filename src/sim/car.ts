@@ -714,13 +714,18 @@ export function stepCar(
       dNext -= Math.sign(dNext) * pull
     }
     const clampedD = clamp(dNext, -STEER_LIMIT, STEER_LIMIT)
-    // Pinned against the limit: drop the stored lateral momentum rather than
-    // save it up to be released the moment the car comes off the edge.
-    const clampedVLat = clampedD !== dNext ? 0 : newVLat
 
     advance = vS * step
     state.v = newVLong
-    state.vLat = clampedVLat
+    // BUGFIX (Block I): this used to zero vLat on every frame the car was
+    // pinned against STEER_LIMIT, not just the transition frame. That
+    // severs the vLat<->alphaRear feedback the (vLat, yawRate) pair needs
+    // to find its own equilibrium -- instead of settling into a tight line
+    // against the kerb, yawRate climbed unopposed for as long as the car
+    // stayed pinned, then dumped all of it into a violent slide the instant
+    // it came off. The position clamp above is still what stops the car
+    // leaving the road; vLat is left alone to keep doing its own job.
+    state.vLat = newVLat
     state.yawRate = newYawRate
     state.yaw = newYaw
     state.d = clampedD
