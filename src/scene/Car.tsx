@@ -446,6 +446,14 @@ export function Car() {
         )
         p.d = 0
         p.v = 0
+        // A warp is a rigid teleport everywhere else (see ChaseCam); there
+        // is nothing for the driver to have steered during one, so the
+        // bicycle-model state resets clean at the new position rather than
+        // carrying a slide or a yaw rate across the jump.
+        p.yaw = headingAt(p.s)
+        p.vLat = 0
+        p.yawRate = 0
+        p.steeringAngle = 0
         // Same fuel invariant as stepCar's, and for the same reason: `s`
         // wraps at the start/finish line, so a warp whose destination lies
         // on the far side of that wrap (recomputing fuel from raw `s`
@@ -498,6 +506,14 @@ export function Car() {
       s: p.s,
       d: p.d,
       v: race.phase === 'warping' ? 0 : p.v,
+      // `p.yaw` is NaN (see sim/car.ts's own sentinel) until stepCar's first
+      // real call, which never happens during 'lights'/'launching' -- so on
+      // the very first launch of a session, this publishes before that
+      // first call. ChaseCam's yaw-lag ref accumulates every frame
+      // (`+=`), so one NaN frame here poisons it permanently, not just for
+      // a frame: the fallback has to live here, at the boundary where the
+      // sentinel would otherwise leak to a consumer that never clears it.
+      yaw: Number.isNaN(p.yaw) ? headingAt(p.s) : p.yaw,
       gear: p.gear,
       rpm: p.rpm,
       fuel: p.fuel,

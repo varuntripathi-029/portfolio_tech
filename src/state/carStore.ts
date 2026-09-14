@@ -15,6 +15,10 @@ interface CarState {
   d: number
   /** Forward speed, m/s. */
   v: number
+  /** Vehicle heading, world radians. The one authoritative body rotation --
+   * ChaseCam and DriftEffects read this directly instead of reconstructing
+   * it from track heading plus slip angle. */
+  yaw: number
   gear: number
   rpm: number
   /** 1 at the line, 0 at the CONTACT marker. */
@@ -56,6 +60,7 @@ export const useCarStore = create<CarState>((set) => ({
   s: 0,
   d: 0,
   v: 0,
+  yaw: 0,
   gear: 0,
   rpm: 0,
   fuel: 1,
