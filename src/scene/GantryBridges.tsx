@@ -81,8 +81,16 @@ export function GantryBridges() {
             // as the trackside board beside it.
             uv: ledCellUV(i + 3),
             // Width runs across the track, so the face looks back down it at
-            // an approaching car.
+            // an approaching car -- which means the readable side is the
+            // -tangent side (the car is behind the gantry in arc-length
+            // terms as it approaches), opposite the +tangent normal this
+            // `right` vector produces (normal = right rotated 90deg = the
+            // tangent itself here). `flip` corrects the UVs for being read
+            // from that back face instead of rebuilding the geometry with a
+            // negated `right`; without it the approaching driver saw the
+            // panel mirrored the entire time.
             right: { x: fr.lx, z: fr.lz },
+            flip: true,
           }
         }),
       ),
