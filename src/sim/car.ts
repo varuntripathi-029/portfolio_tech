@@ -195,26 +195,65 @@ const STEER_RESPONSE = 4
 const YAW_INERTIA = MASS * CG_TO_FRONT * CG_TO_REAR * 2
 
 /**
- * Additional yaw torque opposing rotation, rad/s^2 per rad/s of yaw rate.
- * Added only after verifying every sign, force direction, axle load and
- * coordinate transform in this file was already correct: with those all
- * confirmed right, a saturated linear tyre model still has nowhere for a
- * large yaw rate to go once both axles are pinned at their friction-circle
- * ceiling -- the tyre-force "spring" that normally restores the car goes
- * flat (a saturated force does not grow with slip angle any more), while
- * the -vLong*yawRate centripetal coupling term keeps growing right along
- * with yawRate itself. Nothing was left to arrest that growth.
+ * Additional yaw torque opposing rotation, rad/s^2 -- see YAW_DAMPING_LINEAR
+ * and YAW_DAMPING_QUADRATIC just below for the two terms this splits into
+ * and why. Added (Block I) only after verifying every sign, force
+ * direction, axle load and coordinate transform in this file was already
+ * correct: with those all confirmed right, a saturated linear tyre model
+ * still has nowhere for a large yaw rate to go once both axles are pinned
+ * at their friction-circle ceiling -- the tyre-force "spring" that
+ * normally restores the car goes flat (a saturated force does not grow
+ * with slip angle any more), while the -vLong*yawRate centripetal coupling
+ * term keeps growing right along with yawRate itself. Nothing was left to
+ * arrest that growth.
  *
- * This is added directly into the yaw acceleration calculation, before
- * integration -- not a multiply on the resulting yawRate afterward, and
- * not conditioned on "is this a spin" -- so it cannot mask a sign error or
- * a missing force the way an after-the-fact `yawRate *= 0.9` would. Real
- * tyres dissipate energy scrubbing sideways in a way this simplified 2-DOF,
- * purely force-based model has no other mechanism to capture, and a torque
- * opposing rotation rate is the standard, textbook way that dissipation
- * gets represented in a model this size.
+ * This is the modest, physically-justified fix invited once (and only
+ * once) that verification was done: real tyres dissipate energy scrubbing
+ * sideways in a way this simplified 2-DOF, purely force-based model has no
+ * other mechanism to capture, and a torque opposing rotation rate is the
+ * standard, textbook way that dissipation gets represented in a model this
+ * size. It is added directly into the yaw acceleration calculation, before
+ * integration -- not a multiply on the resulting yawRate/vLat afterward,
+ * and not conditioned on "is this a spin" -- so it cannot mask a sign
+ * error or a missing force the way an after-the-fact `yawRate *= 0.9`
+ * would.
+ *
+ * A single LINEAR term forced an impossible choice: strong enough to
+ * survive realistic messy play (rapid, overlapping handbrake/steer/brake
+ * inputs -- not the clean single-hold-then-release this was first tuned
+ * against) meant it also flattened an ordinary single handbrake drift to a
+ * barely-there few degrees. A real car's own yaw damping (aerodynamic,
+ * plus the tyres' own nonlinear behaviour past their linear region) does
+ * not scale linearly with rotation rate either -- it grows closer to the
+ * SQUARE of it, the same reason aerodynamic drag scales with v^2 not v.
+ * Splitting it the same way resolves the conflict instead of trading one
+ * failure for the other: gentle at the yaw rates an ordinary drift
+ * actually reaches (a few tenths to ~1.5 rad/s), sharply stronger only
+ * once yaw rate is already in the range that a real car would call a spin
+ * (rapid, compounding handbrake/steer/brake input measured up to ~7 rad/s
+ * before this existed).
  */
-const YAW_DAMPING = 1.5
+const YAW_DAMPING_LINEAR = 1.5
+const YAW_DAMPING_QUADRATIC = 2.2
+
+/**
+ * Hard ceiling on vLat's magnitude, m/s. `state.v` (longitudinal speed) has
+ * always been clamped to [0, TOP_SPEED] -- nothing physical stops it from
+ * being unbounded either, the clamp is just there because an unbounded
+ * integrator has no business representing a real car's speed. vLat was the
+ * one velocity state with no equivalent limit, and once the friction
+ * circle saturates, its own tyre-force "brake" is a CONSTANT (a saturated
+ * force does not grow with slip angle), so recovering from an extreme vLat
+ * takes time roughly proportional to how extreme it got -- the yaw damping
+ * above controls ROTATION, but does nothing to stop vLat itself from
+ * reaching an unphysical peak in the first place under compounding,
+ * unrealistic input (rapid overlapping handbrake/steer/brake presses, not
+ * a single clean hold). 40 m/s is generous for how large a genuine drift's
+ * lateral speed gets (a clean 20-degree slide around 30 m/s forward implies
+ * roughly 11 m/s of vLat) while still well short of anything that reads as
+ * broken.
+ */
+const VLAT_MAX = 40
 
 /**
  * Below this road speed, steering blends from the dynamic (slip-angle) tyre
@@ -252,7 +291,7 @@ const STEER_GRIP_SPEED = 14
  * the middle of that -- a real, sustained, controllable slide (tens of
  * degrees of slip) without ever crossing into an unrecoverable spin.
  */
-const HANDBRAKE_REAR_GRIP = 0.5
+const HANDBRAKE_REAR_GRIP = 0.3
 
 /** Floor on either axle's load, as a fraction of its own static value.
  * BRAKE_G is aggressive enough (4.6g) that the raw weight-transfer term can
@@ -729,7 +768,10 @@ export function stepCar(
 
     const cosSteer = Math.cos(state.steeringAngle)
     const yawMoment = CG_TO_FRONT * FyFront * cosSteer - CG_TO_REAR * FyRear
-    const yawAccel = yawMoment / YAW_INERTIA - YAW_DAMPING * yawRateOld
+    const yawAccel =
+      yawMoment / YAW_INERTIA -
+      YAW_DAMPING_LINEAR * yawRateOld -
+      YAW_DAMPING_QUADRATIC * yawRateOld * Math.abs(yawRateOld)
     // The -vLongOld*yawRateOld term is the standard bicycle-model coupling
     // from working in a ROTATING (vehicle) frame: without it a car turning
     // at constant slip angle would show zero lateral acceleration, which is
@@ -739,7 +781,7 @@ export function stepCar(
     const yawRateKinematic = (vLongOld * Math.tan(state.steeringAngle)) / WHEELBASE
     let newYawRate = yawRateOld + yawAccel * step
     newYawRate = newYawRate * authority + yawRateKinematic * (1 - authority)
-    const newVLat = vLatOld + latAccelVehicle * step
+    const newVLat = clamp(vLatOld + latAccelVehicle * step, -VLAT_MAX, VLAT_MAX)
     const newYaw = normalizeAngle(state.yaw + newYawRate * step)
 
     // Resolve the vehicle-frame velocity into the track's own basis. This is
@@ -803,7 +845,6 @@ export function stepCar(
   if (!state.reversing) updateGearbox(state, step)
 
   state.fuel = Math.min(state.fuel, clamp(1 - state.progress / track.length, 0, 1))
-  // Wheels spin the way the car is actually travelling.
   // Wheels spin the way the car is actually travelling, capped to
   // WHEEL_VISUAL_OMEGA_MAX. `wheelAngle` has exactly one reader anywhere in
   // the project (Car.tsx's spin quaternion) -- nothing physical or
