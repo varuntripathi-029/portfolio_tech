@@ -4,6 +4,7 @@ import { Overlay } from './ui/Overlay'
 import { assertCircuit, assertPropClearance, assertPropsOutside } from './track/assertions'
 import { collectProps, collectOutsideProps } from './track/props'
 import { useRaceStore } from './state/raceStore'
+import { useCarStore } from './state/carStore'
 import { SECTIONS, type SectionId } from './data/sections'
 import { contextState, currentGains } from './audio/engine'
 
@@ -37,6 +38,7 @@ function VerifyHooks() {
       __phase: () => string
       __warpTo: (id: SectionId) => void
       __audio: () => { state: string; gains: ReturnType<typeof currentGains> }
+      __car: () => ReturnType<typeof useCarStore.getState>
     }
     w.__phase = () => useRaceStore.getState().phase
     w.__warpTo = (id) => {
@@ -44,6 +46,7 @@ function VerifyHooks() {
       useRaceStore.getState().requestWarp({ section: id })
     }
     w.__audio = () => ({ state: contextState(), gains: currentGains() })
+    w.__car = () => useCarStore.getState()
   }, [])
   return null
 }
