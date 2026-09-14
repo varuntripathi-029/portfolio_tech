@@ -234,11 +234,25 @@ const YAW_DAMPING = 1.5
  */
 const STEER_GRIP_SPEED = 14
 
-/** How much the handbrake multiplies rear cornering stiffness AND the
+/**
+ * How much the handbrake multiplies rear cornering stiffness AND the
  * rear's peak grip budget by. A locked/skidding wheel has both a much
  * flatter slip-angle response and a lower peak friction than a rolling one,
- * so both are scaled, not just one. */
-const HANDBRAKE_REAR_GRIP = 0.25
+ * so both are scaled, not just one.
+ *
+ * Raised (Block I) from 0.25 to 0.5. At 0.25 -- combined with any of the
+ * grip values this project has used -- sustained handbrake + full steer at
+ * speed crosses the model's own stability boundary (the classic
+ * bicycle-model divergence condition once one axle's usable stiffness
+ * drops far enough below the other's) and the car does not settle into a
+ * slide, it genuinely spins: yaw rate climbs without bound instead of
+ * reaching a steady drift angle. Swept empirically in 0.02 steps against a
+ * 1.5s full-lock handbrake hold at 30 m/s: below ~0.46 the spin was
+ * unbounded, above ~0.55 the slide became barely noticeable. 0.5 sits in
+ * the middle of that -- a real, sustained, controllable slide (tens of
+ * degrees of slip) without ever crossing into an unrecoverable spin.
+ */
+const HANDBRAKE_REAR_GRIP = 0.5
 
 /** Floor on either axle's load, as a fraction of its own static value.
  * BRAKE_G is aggressive enough (4.6g) that the raw weight-transfer term can
