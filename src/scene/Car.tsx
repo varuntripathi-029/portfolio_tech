@@ -5,7 +5,7 @@ import * as THREE from 'three'
 import { useCarStore } from '../state/carStore'
 import { useRaceStore } from '../state/raceStore'
 import { SECTIONS, sectionById } from '../data/sections'
-import { TRACK_LENGTH, curvatureAt, frameAt, wrapS } from '../track/trackFrame'
+import { TRACK_LENGTH, curvatureAt, frameAt, headingAt, wrapS } from '../track/trackFrame'
 import { createCarState, stepCar, stopDistance, type CarInput } from '../sim/car'
 import { CAR_SCALE } from '../sim/carSpec'
 import { useIsTouchDevice } from '../ui/useTouch'
@@ -54,8 +54,6 @@ function warpEase(t: number): number {
 /** How much the body leans, in radians at full lateral or longitudinal load. */
 const ROLL_MAX = 0.055
 const PITCH_MAX = 0.035
-/** Front wheel yaw at full lateral load. */
-const WHEEL_YAW_MAX = 0.32
 
 /**
  * The car axes. Its parent chain is identity, so these are the body lateral
@@ -168,7 +166,7 @@ function useDriveInput(isTouch: boolean) {
   return input
 }
 
-const track = { length: TRACK_LENGTH, curvatureAt }
+const track = { length: TRACK_LENGTH, curvatureAt, headingAt }
 
 /** The next braking stop ahead of an arc length, in lap order. */
 function nextStopAfter(s: number) {
@@ -517,21 +515,20 @@ export function Car() {
     const fr = frameAt(p.s)
     group.current.position.set(fr.x + fr.lx * p.d, 0, fr.z + fr.lz * p.d)
 
-    // The model faces +Z, so the tangent heading is a direct Y rotation. The
-    // small `-p.roll * 0.06` nudge is cosmetic, present even outside a drift,
-    // to sell a car changing line rather than sliding. `p.slipAngle` is the
-    // real thing: body yaw is tangent heading plus slip angle, per the brief.
-    const heading = Math.atan2(fr.tx, fr.tz)
-    const slipRad = (p.slipAngle * Math.PI) / 180
-    group.current.rotation.set(
-      p.pitch * PITCH_MAX,
-      heading - p.roll * 0.06 + slipRad,
-      p.roll * ROLL_MAX,
-    )
+    // The model faces +Z, so heading is a direct Y rotation. `p.yaw` is the
+    // sim's own, single authoritative body rotation (see sim/car.ts): the
+    // renderer reads it, it does not compute a second one. If the car is
+    // sliding, its heading and its direction of travel differ for real --
+    // there is no separate slip-angle term to add on top of this the way
+    // the old model needed, because p.yaw already IS where the body points.
+    // The small `-p.roll * 0.06` nudge is the one purely cosmetic addition
+    // left, present even outside a slide, to sell a car changing line.
+    group.current.rotation.set(p.pitch * PITCH_MAX, p.yaw - p.roll * 0.06, p.roll * ROLL_MAX)
 
-    const yaw = p.roll * WHEEL_YAW_MAX
     spinQuat.setFromAxisAngle(SPIN_AXIS, p.wheelAngle)
-    steerQuat.setFromAxisAngle(STEER_AXIS, yaw)
+    // The real front-wheel steering angle the sim is actually driving on,
+    // not a lean-based approximation.
+    steerQuat.setFromAxisAngle(STEER_AXIS, p.steeringAngle)
 
     for (const wheel of wheels.rear) {
       wheel.quaternion.copy(restQuat(wheel)).premultiply(spinQuat)
