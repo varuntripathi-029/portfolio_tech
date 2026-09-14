@@ -126,14 +126,15 @@ export function ChaseCam() {
 
   /**
    * Chase-cam yaw lag, Block F: while drifting, the rig's own forward/left
-   * basis follows the car's slip angle only slowly, so during the slide the
-   * body visibly rotates relative to a camera that has not caught up yet --
-   * which is the whole reason a drift reads on screen instead of just
-   * looking like the same chase view with a sideways car glued to it. Once
-   * the slip angle stops changing (release, or holding a steady slide) the
-   * lag catches up and the camera settles directly behind again.
+   * basis follows the car's ACTUAL heading (relative to the track tangent)
+   * only slowly, so during the slide the body visibly rotates relative to a
+   * camera that has not caught up yet -- which is the whole reason a drift
+   * reads on screen instead of just looking like the same chase view with a
+   * sideways car glued to it. Once the heading stops changing (release, or
+   * holding a steady slide) the lag catches up and the camera settles
+   * directly behind again.
    */
-  const slipLag = useRef(0)
+  const yawLag = useRef(0)
   const YAW_LAG_RATE = 2.2 // per second, slower than FOLLOW_RATE so it visibly trails
 
   // Dev-only assertion for Block F invariant 4: the rig must not swing or
@@ -149,7 +150,7 @@ export function ChaseCam() {
     // erasing the follow lag for a single jarring frame.
     const delta = Math.min(rawDelta, 1 / 30)
 
-    const { s, d, v, warpProgress, slipAngle, reversing } = useCarStore.getState()
+    const { s, d, v, warpProgress, yaw, reversing } = useCarStore.getState()
     // Block F invariant 4: the feed-forward lead below must use SIGNED
     // speed. `v` from the store is a magnitude; reverse flips its sign here
     // so backing up pulls the lead term the other way instead of still
@@ -197,20 +198,27 @@ export function ChaseCam() {
         carPos.z + fr.tz * LOOK_ALONG * blend.current,
       )
     } else {
-      // Yaw lag: the rig's own basis follows the slip angle only slowly, at
-      // YAW_LAG_RATE rather than snapping to it, so a drift shows up as the
-      // body rotating relative to a camera that has not caught up (reduced
-      // motion snaps instead, same as the orbit).
-      const targetSlipRad = (slipAngle * Math.PI) / 180
+      // Yaw lag: the rig's own basis follows the car's actual heading
+      // relative to the track tangent only slowly, at YAW_LAG_RATE rather
+      // than snapping to it, so a drift shows up as the body rotating
+      // relative to a camera that has not caught up (reduced motion snaps
+      // instead, same as the orbit).
+      const trackHeading = Math.atan2(fr.tx, fr.tz)
+      let targetRelYaw = (yaw - trackHeading) % (Math.PI * 2)
+      if (targetRelYaw > Math.PI) targetRelYaw -= Math.PI * 2
+      if (targetRelYaw < -Math.PI) targetRelYaw += Math.PI * 2
       if (reduce) {
-        slipLag.current = targetSlipRad
+        yawLag.current = targetRelYaw
       } else {
-        slipLag.current += (targetSlipRad - slipLag.current) * (1 - Math.exp(-YAW_LAG_RATE * delta))
+        let diff = (targetRelYaw - yawLag.current) % (Math.PI * 2)
+        if (diff > Math.PI) diff -= Math.PI * 2
+        if (diff < -Math.PI) diff += Math.PI * 2
+        yawLag.current += diff * (1 - Math.exp(-YAW_LAG_RATE * delta))
       }
-      const cosL = Math.cos(slipLag.current)
-      const sinL = Math.sin(slipLag.current)
-      // Rotating the tangent/left basis by the lagged slip angle, using this
-      // project's own atan2(tx, tz) heading convention throughout.
+      const cosL = Math.cos(yawLag.current)
+      const sinL = Math.sin(yawLag.current)
+      // Rotating the tangent/left basis by the lagged relative heading,
+      // using this project's own atan2(tx, tz) heading convention throughout.
       const ltx = fr.tx * cosL + fr.tz * sinL
       const ltz = fr.tz * cosL - fr.tx * sinL
       const llx = fr.lx * cosL + fr.lz * sinL

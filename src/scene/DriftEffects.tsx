@@ -187,13 +187,12 @@ export function DriftEffects({ enabled = true }: { enabled?: boolean }) {
     const delta = Math.min(rawDelta, 1 / 30)
     if (!enabled) return
 
-    const { s, d, slipAngle, drifting } = useCarStore.getState()
+    const { s, d, yaw, drifting } = useCarStore.getState()
     const phase = useRaceStore.getState().phase
     const active = drifting && (phase === 'driving' || phase === 'arriving')
 
     const fr = frameAt(s)
     carPos.set(fr.x + fr.lx * d, 0, fr.z + fr.lz * d)
-    const yaw = Math.atan2(fr.tx, fr.tz) + (slipAngle * Math.PI) / 180
 
     rearWheelWorld(leftWheel, 1, carPos.x, carPos.z, yaw)
     rearWheelWorld(rightWheel, -1, carPos.x, carPos.z, yaw)
