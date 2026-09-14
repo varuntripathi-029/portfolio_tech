@@ -594,8 +594,13 @@ export function stepCar(
     const FyFrontRaw = -Cf * alphaFront
     const FyRearRaw = -Cr * alphaRear
 
-    const maxForceFront = frontLoad * GRIP_G * G
-    const maxForceRear = rearLoad * rearGripMult * GRIP_G * G
+    // frontLoad/rearLoad are already forces in Newtons (STATIC_FRONT_LOAD
+    // etc. already bake in G), so the tyre-force budget is load * GRIP_G --
+    // GRIP_G is the (dimensionless) friction coefficient, not an
+    // acceleration; multiplying by G again here would double-count gravity
+    // and inflate the grip budget roughly tenfold.
+    const maxForceFront = frontLoad * GRIP_G
+    const maxForceRear = rearLoad * rearGripMult * GRIP_G
 
     // Longitudinal demand. Automatic braking into a section-stop marker
     // overrides throttle/brake entirely, same as before (an assistive,
