@@ -6,9 +6,18 @@
  * This is the acceptance test for Stage 2, and it exists because the automated
  * browser cannot run a frame loop (see src/sim/car.ts). Exits non-zero if the
  * lap is too slow, a stop misses its marker, or a geometry assertion fails.
+ *
+ * Block H note: the car is now a real 2-DOF bicycle model (see sim/car.ts's
+ * own header) -- steering is never derived from track curvature any more, so
+ * a car driven with `steerEnabled: false` the whole lap the way the old
+ * script did would simply drive straight into the first corner. Every test
+ * below that needs to get around the track now feeds real steering through
+ * `autoSteer`, a small proportional controller defined at the bottom of this
+ * file. It exists ONLY for this headless harness -- it is not part of the
+ * shipped game, which is driven by a human's A/D, exactly like it always was.
  */
 
-import { TRACK_LENGTH, curvatureAt, frameAt, wrapS } from '../src/track/trackFrame'
+import { TRACK_LENGTH, curvatureAt, headingAt, frameAt, wrapS } from '../src/track/trackFrame'
 import { assertCircuit, assertPropClearance, assertPropsOutside } from '../src/track/assertions'
 import { collectProps, collectOutsideProps } from '../src/track/props'
 import { SECTIONS, BRAKING_STOPS } from '../src/data/sections'
@@ -21,6 +30,8 @@ import {
   REVERSE_TOP_SPEED,
   REVERSE_GEAR,
   type CarInput,
+  type CarState,
+  type TrackQuery,
 } from '../src/sim/car'
 import { STEER_LIMIT, RUMBLE_D } from '../src/sim/carSpec'
 
@@ -33,13 +44,67 @@ const STOP_TOLERANCE = 0.5
 /** Runaway guard, in simulated seconds. */
 const SIM_LIMIT = 400
 
-const track = { length: TRACK_LENGTH, curvatureAt }
+const track: TrackQuery = { length: TRACK_LENGTH, curvatureAt, headingAt }
 
 let failed = false
 function fail(message: string) {
   failed = true
   console.error(`  FAIL  ${message}`)
 }
+
+function normalizeAngle(a: number): number {
+  let x = a % (Math.PI * 2)
+  if (x > Math.PI) x -= Math.PI * 2
+  if (x < -Math.PI) x += Math.PI * 2
+  return x
+}
+
+/**
+ * Test-harness-only steering controller: a PD controller on heading error
+ * (proportional to the error, damped by the car's own current yaw rate)
+ * plus a small lateral-offset nudge, just enough to keep this headless
+ * "driver" on the racing line so the lap-time/braking-precision checks
+ * below still mean something now that the road no longer steers the car
+ * for it. This is not a model of anything -- it is a stand-in for a
+ * human's hands on A/D, tuned only to be stable and reasonably tight, not
+ * to drive optimally.
+ *
+ * A plain proportional term on heading error alone (no damping) was tried
+ * first and is NOT stable here: the car has real rotational inertia and a
+ * lagged steering actuator, so a pure-P controller overshoots, and the
+ * overshoot correction overshoots further, pumping energy into the yaw/
+ * lateral dynamics every corner rather than settling into it -- the same
+ * way a real hand oversteering the wheel back and forth would. Damping on
+ * yaw rate (Kd below) is what a real driver's own sense of rotation rate
+ * provides instinctively; without an equivalent term here the controller
+ * has none.
+ */
+const AUTOSTEER_HEADING_GAIN = 2.0
+const AUTOSTEER_YAW_DAMPING = 0.4
+const AUTOSTEER_LATERAL_GAIN = 0.06
+
+function autoSteer(car: CarState, targetD = 0): number {
+  const trackHeading = track.headingAt(car.s)
+  // A freshly created CarState has `yaw = NaN` (see sim/car.ts): stepCar
+  // resolves that sentinel itself on its first call, but this controller
+  // reads car.yaw BEFORE that first call happens, so it needs its own
+  // guard rather than seeding the whole run with NaN.
+  const yaw = Number.isNaN(car.yaw) ? trackHeading : car.yaw
+  const headingError = normalizeAngle(trackHeading - yaw)
+  const lateralError = targetD - car.d
+  const steer =
+    headingError * AUTOSTEER_HEADING_GAIN -
+    car.yawRate * AUTOSTEER_YAW_DAMPING +
+    lateralError * AUTOSTEER_LATERAL_GAIN
+  return Math.max(-1, Math.min(1, steer))
+}
+
+/** Curvature above which the test-harness driver treats the road as "in a
+ * corner" and eases off the throttle (coast, not accelerate) to keep some
+ * of the friction circle free for cornering force -- the same trade-off a
+ * real driver feels and reacts to, which this harness has to approximate
+ * explicitly since it has no feel. */
+const CORNERING_CURVATURE = 1e-4
 
 // --- geometry first: a bad circuit makes the lap time meaningless ---
 
@@ -148,12 +213,14 @@ const order = BRAKING_STOPS
 
 while (stopIndex < order.length && simTime < SIM_LIMIT) {
   const target = order[stopIndex]
+  const lift = wantsLift(car.s, car.v)
+  const cornering = Math.abs(curvatureAt(car.s)) > CORNERING_CURVATURE
   const input: CarInput = {
-    throttle: !wantsLift(car.s, car.v),
-    brake: wantsLift(car.s, car.v),
-    steer: 0,
+    throttle: !lift && !cornering,
+    brake: lift,
+    steer: autoSteer(car),
     targetS: target.s,
-    steerEnabled: false,
+    steerEnabled: true,
     handbrake: false,
   }
   const { arrived } = stepCar(car, input, DT, track)
@@ -193,7 +260,8 @@ if (stopIndex < order.length) {
   fail(`the car never reached stop "${order[stopIndex].id}" within ${SIM_LIMIT}s`)
 }
 
-// Roll the remaining 40m over the line to close the lap.
+// Roll the remaining 40m over the line to close the lap. Entirely on
+// mainIn, a straight, so no steering is needed to get there.
 {
   const input: CarInput = {
     throttle: true,
@@ -216,7 +284,7 @@ const lapTime = t
 console.log(`  lap, no reading   ${lapTime.toFixed(2)}s   (limit ${MAX_LAP}, target ~75)`)
 console.log(`  top speed         ${(topSpeed * 3.6).toFixed(0)} km/h`)
 console.log(`  gear shifts       ${shiftCount}`)
-console.log(`  max lateral       ${maxLatG.toFixed(2)}g   (grip 4.50)`)
+console.log(`  max lateral       ${maxLatG.toFixed(2)}g`)
 console.log(
   `  closest to limit  ${closestToLimit.toFixed(2)}m of margin ` +
     `(steer limit ${STEER_LIMIT.toFixed(2)}m, rumble at ${RUMBLE_D.toFixed(2)}m)`,
@@ -242,38 +310,59 @@ for (const seg of segmentTimes) {
   console.log(`  ${seg.id.padEnd(22)} ${seg.seconds.toFixed(2)}s`)
 }
 
-// --- understeer pass: flat out with no lift, to exercise the consequence ---
+// --- understeer pass: flat out with no lift, actively steered, to exercise
+// what happens when the tyres are simply asked for more than they have ---
+//
+// Under the old model "no lift" meant literally `steer: 0` and the track's
+// own curvature still dragged the car around every corner. Under a real
+// bicycle model that tests nothing -- a driver DOES steer into a corner; the
+// point of this pass is that steering alone is not enough once entry speed
+// outruns the front tyres' grip budget. `autoSteer`'s PD controller is
+// deliberately NOT used here: it is tuned to drive smoothly, which is a
+// different question from "can the tyres physically hold this corner at
+// all" -- this drives a fixed, full-lock turn-in at the tight (lift) corner
+// instead, entered at TOP_SPEED with the throttle held the entire way
+// through, isolating the tyre-grip question from driver skill.
 
 console.log('\nundersteer, flat out with no lift')
 {
-  const bold = createCarState(0)
-  const input: CarInput = {
-    throttle: true,
-    brake: false,
-    steer: 0,
-    targetS: null,
-    steerEnabled: true,
-    handbrake: false,
-  }
+  const designTotal = RESOLVED.reduce((a, r) => a + r.length, 0)
+  const toMeasured = TRACK_LENGTH / designTotal
+  const tight = RESOLVED.find((r) => r.id === 'tightCorner')!
+  const approachS = wrapS(tight.start * toMeasured - 100)
+
+  const bold = createCarState(approachS)
+  bold.v = TOP_SPEED
+  bold.yaw = track.headingAt(approachS)
+
   let time = 0
   let maxDrift = 0
   let onKerb = 0
-  let maxScrub = 0
-  let lastV = 0
-  // Two laps: the first builds up to speed, the second is the measurement.
-  while (time < 200 && bold.travelled < TRACK_LENGTH * 2) {
+  let understeerTime = 0
+  while (time < 10) {
+    const curvature = curvatureAt(bold.s)
+    const cornering = Math.abs(curvature) > 1e-4
+    const input: CarInput = {
+      throttle: true,
+      brake: false,
+      steer: cornering ? Math.sign(curvature) : 0,
+      targetS: null,
+      steerEnabled: true,
+      handbrake: false,
+    }
     stepCar(bold, input, DT, track)
     time += DT
-    if (bold.travelled > TRACK_LENGTH) {
-      maxDrift = Math.max(maxDrift, Math.abs(bold.d))
-      if (Math.abs(bold.d) >= RUMBLE_D) onKerb += DT
-      if (bold.understeer) maxScrub = Math.max(maxScrub, lastV - bold.v)
-    }
-    lastV = bold.v
+    maxDrift = Math.max(maxDrift, Math.abs(bold.d))
+    if (Math.abs(bold.d) >= RUMBLE_D) onKerb += DT
+    if (bold.understeer) understeerTime += DT
   }
   console.log(`  max drift         ${maxDrift.toFixed(2)}m of ${STEER_LIMIT.toFixed(2)}m available`)
   console.log(`  time on the kerb  ${onKerb.toFixed(2)}s   (outer wheel past ${RUMBLE_D.toFixed(2)}m)`)
+  console.log(`  time understeering ${understeerTime.toFixed(2)}s   (front tyres asked for more than they had)`)
   console.log(`  slowest point     ${(cornerSpeed(1 / 115) * 3.6).toFixed(0)} km/h is the lift-corner limit`)
+  if (understeerTime <= 0) {
+    fail('taking the lift corner flat out, full lock, never saturated the front tyres')
+  }
   if (maxDrift < RUMBLE_D) {
     fail(
       `driving flat out never pushed the car past ${RUMBLE_D.toFixed(2)}m, so the kerb rumble is ` +
@@ -285,13 +374,12 @@ console.log('\nundersteer, flat out with no lift')
 // --- drift-heavy run (Block F): confirm the steer limit still holds, and
 // report the time cost of drifting every corner rather than gripping it ---
 //
-// The "grip lap" above steers not at all (pure understeer plus a lift before
-// the one corner that needs it), so it is not a fair baseline for isolating
-// what drifting itself costs: active steering into a corner is simply a
-// different, more capable line regardless of the handbrake. Instead this
-// drives the SAME steer-hard-into-every-corner style twice, once with the
-// handbrake and once without, so the only variable between the two runs is
-// drifting itself.
+// The "grip lap" above steers with the line-following controller (a
+// different, more capable line regardless of the handbrake), so it is not a
+// fair baseline for isolating what drifting itself costs. Instead this
+// drives the SAME aggressive steer-hard-into-every-corner style twice, once
+// with the handbrake and once without, so the only variable between the two
+// runs is drifting itself.
 
 function driveOneLap(withHandbrake: boolean) {
   const dcar = createCarState(0)
@@ -306,7 +394,7 @@ function driveOneLap(withHandbrake: boolean) {
     const input: CarInput = {
       throttle: true,
       brake: false,
-      steer: cornering ? Math.sign(curvature) : 0,
+      steer: cornering ? Math.sign(curvature) : autoSteer(dcar),
       targetS: null,
       steerEnabled: true,
       handbrake: withHandbrake && cornering,
@@ -388,7 +476,7 @@ console.log('\nsustained slide per corner')
     console.log(
       `  ${corner.id.padEnd(14)} entry ${(entrySpeed * 3.6).toFixed(0)} km/h -> ` +
         `exit ${(exitSpeed * 3.6).toFixed(0)} km/h (${lossPct.toFixed(1)}% lost), ` +
-        `reached ${car.driftPhase}`,
+        `${car.drifting ? 'still sliding' : 'recovered'}, slip ${car.slipAngle.toFixed(1)} deg`,
     )
     if (lossPct >= 25) {
       fail(`sustained slide through "${corner.id}" lost ${lossPct.toFixed(1)}% of entry speed, over the 25% limit`)
