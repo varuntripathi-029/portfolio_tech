@@ -13,8 +13,17 @@ import { BARRIER_X } from './trackLayout'
  * anything offset more than 20m) rather than trusting `OUTSIDE_SIGN` alone.
  */
 
-/** Measured, do not re-derive (spec 1.7). */
-const SKYLINE_BASE_OFFSET_Y = 143
+/**
+ * The GLB's own node origin already sits almost exactly at the model's base:
+ * with no Y offset applied at all, the mesh's true world-space AABB (walked
+ * through its full matrixWorld, corners transformed, not just a single-axis
+ * shortcut -- the chain has a baked rotation that a shortcut gets wrong)
+ * starts at y ~ 0.34, not ~57 below origin the way the old
+ * SKYLINE_BASE_OFFSET_Y=143 (times SCALE_Y=0.4 = 57.2) assumed. Applying that
+ * offset put the entire skyline floating ~57 units in the air. Replaced with
+ * the small, empirically-measured correction that actually grounds it.
+ */
+const SKYLINE_GROUND_Y = -0.34
 
 /**
  * Scale picked inside the spec's own two, only partially reconciled,
@@ -97,7 +106,7 @@ function SkylineCluster() {
         <primitive
           key={i}
           object={i === 0 ? prepared : prepared.clone(true)}
-          position={[p.x, SKYLINE_BASE_OFFSET_Y * SCALE_Y, p.z]}
+          position={[p.x, SKYLINE_GROUND_Y, p.z]}
           rotation={[0, p.yaw, 0]}
           scale={[SCALE_X, SCALE_Y, SCALE_Y]}
         />
