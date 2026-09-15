@@ -179,7 +179,17 @@ const REAR_CORNERING_STIFFNESS = 150000
  * moved the numbers until FRONT_CORNERING_STIFFNESS also came down). */
 const MAX_STEER_DEG = 18
 const MAX_STEER_RAD = MAX_STEER_DEG * DEG
-const STEER_RESPONSE = 4
+/** How fast the actuator chases a new A/D target: time constant is 1/this,
+ * in seconds. 4.6 (was 4, a very small bump on request): 0.217s to reach
+ * ~63% of a new target instead of 0.25s, so a tap answers a little sooner
+ * without touching MAX_STEER_DEG -- that constant governs how far the wheel
+ * can turn (how sharp a corner it can hold), this one governs how promptly
+ * it gets there, which is what "more sensitive" means for an A/D digital
+ * input rather than an analog stick. This chases the target through a plain
+ * exponential decay (state.steeringAngle += (target - angle) * (1 -
+ * e^-rate*dt)), which cannot overshoot or oscillate at any rate -- raising
+ * it changes how quickly the angle moves, never whether it wobbles. */
+const STEER_RESPONSE = 4.6
 
 /**
  * Yaw moment of inertia, kg*m^2. Not measured either: `MASS * a * b` is the
@@ -378,15 +388,18 @@ const MIN_DT = 1e-4
 
 /**
  * Ceiling on the wheel spin rate actually fed to the render, rad/s. Purely
- * cosmetic -- see its one call site in stepCar. 30 rad/s corresponds to a
- * linear speed of 30*WHEEL_RADIUS =~ 11.8 m/s (=~42 km/h): below that the
- * wheel's true rate is used unchanged (measured smooth at 26.6 km/h, ~8.5
- * degrees of rotation per 60fps frame); above it, the visual rate stays
- * flat rather than climbing toward the true ~184 rad/s TOP_SPEED would
- * otherwise demand, which is what was reading as a wobble rather than a
- * fast spin.
+ * cosmetic -- see its one call site in stepCar.
+ *
+ * Was 30 (=~42 km/h, ~1.6x the confirmed-smooth reference below), which
+ * cut the worst of the wobble but still read as faintly incoherent rather
+ * than genuinely smooth. Lowered to sit AT the reference point itself
+ * instead of a margin above it: 26.6 km/h (7.39 m/s) was the exact speed
+ * measured smooth in the original diagnostic, at 7.39/WHEEL_RADIUS =~
+ * 18.85 rad/s -- rounded to 19. Below that the wheel's true rate is used
+ * unchanged; above it, the visual rate stays flat rather than climbing
+ * toward the true ~184 rad/s TOP_SPEED would otherwise demand.
  */
-const WHEEL_VISUAL_OMEGA_MAX = 30
+const WHEEL_VISUAL_OMEGA_MAX = 19
 
 export interface CarState {
   /** Arc length along the lap, metres. */
