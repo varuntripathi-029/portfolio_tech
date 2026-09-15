@@ -56,3 +56,6 @@ export const TRACK_HALF = bandById('track').outer
 /** Inner and outer edges of the kerb, which is what the rumble tests against. */
 export const KERB_INNER = bandById('kerb').inner
 export const KERB_OUTER = bandById('kerb').outer
+/** Outer edge of the runoff, i.e. the edge of paved surface before gravel
+ * begins. The physics steer limit is derived from this, not the kerb. */
+export const RUNOFF_OUTER = bandById('runoff').outer

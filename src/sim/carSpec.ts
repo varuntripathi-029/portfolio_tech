@@ -10,7 +10,7 @@
  * Pure: no three, no React. The sim script imports this in Node.
  */
 
-import { KERB_INNER, KERB_OUTER } from '../scene/trackLayout'
+import { KERB_INNER, RUNOFF_OUTER } from '../scene/trackLayout'
 
 /** Group scale that brings the model to roughly metric. */
 export const CAR_SCALE = 0.7
@@ -37,10 +37,22 @@ export const WHEEL_HALF_TRACK = FRONT_WHEEL_X_MODEL * CAR_SCALE
 export const REAR_WHEEL_Z = REAR_WHEEL_Z_MODEL * CAR_SCALE
 
 /**
- * How far the car may move off the racing line before a wheel hangs over the
- * outside edge of the kerb. About 5.86m, derived rather than pasted.
+ * How far the car may move off the racing line before the position clamp in
+ * car.ts stops it. This is a hard boundary, not tyre grip, so it is felt as
+ * an abrupt wall the instant a wheel reaches it -- most noticeable mid-drift,
+ * where lateral speed is highest and the wall gets hit hardest.
+ *
+ * Originally KERB_OUTER - WHEEL_HALF_TRACK (~5.86m): the car was stopped at
+ * the outside edge of the kerb, before the wheel ever reached the runoff.
+ * That gave a drift no room to run wide through a corner before the wall.
+ * Moved out to the edge of the paved runoff instead (~8.86m): the wheel
+ * still never leaves pavement (kerb and runoff are both driveable surfaces
+ * visually), but the car now has ~3m more room before the clamp, which is
+ * roughly the difference between "the drift hits a wall immediately" and
+ * "the drift has space to develop." The wall still exists at RUNOFF_OUTER --
+ * this widens the room before it, it does not remove it.
  */
-export const STEER_LIMIT = KERB_OUTER - WHEEL_HALF_TRACK
+export const STEER_LIMIT = RUNOFF_OUTER - WHEEL_HALF_TRACK
 
 /**
  * Lateral offset at which the OUTER WHEEL first touches the kerb, which is what
