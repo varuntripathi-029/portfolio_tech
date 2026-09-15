@@ -17,11 +17,13 @@ import { chromium, type Page } from 'playwright'
 import { mkdirSync } from 'node:fs'
 
 const PORT = process.env.PORT ?? '5173'
-// See Scene.tsx's SKIP_PERF: r3f-perf's GPU-readback stats stall the timer
-// queue hard enough under headless software rendering that setTimeout chains
-// (the lights countdown, among others) never fire. noperf=1 skips mounting it
-// for this run only; a real visitor never passes the flag.
-const BASE = `http://localhost:${PORT}/?noperf=1`
+// See Scene.tsx's SHOW_PERF: the perf HUD is opt-in via ?debug=1 and off by
+// default everywhere else, including here -- no flag needed to keep this run
+// clear of it. r3f-perf's GPU-readback stats stall the timer queue hard
+// enough under headless software rendering that setTimeout chains (the
+// lights countdown, among others) never fire, which is the reason it must
+// stay off for this run regardless.
+const BASE = `http://localhost:${PORT}/`
 const OUT_DIR = 'verify'
 
 mkdirSync(OUT_DIR, { recursive: true })

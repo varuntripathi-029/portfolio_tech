@@ -21,18 +21,29 @@ import { VerifyBridge } from './VerifyBridge'
 import { useIsTouchDevice } from '../ui/useTouch'
 
 /**
+ * The perf HUD is opt-in, not opt-out. It used to show automatically any
+ * time the app ran in dev mode (`import.meta.env.DEV`), which meant a plain
+ * `npm run dev` visit -- including the developer's own local preview of the
+ * finished site -- always had raw draw-call/FPS telemetry sitting in the
+ * corner. That reads as a broken/unfinished build to anyone who isn't
+ * expecting it, which is exactly backwards for something meant to look done.
+ *
+ * Now it only mounts with an explicit `?debug=1` in the URL, in dev mode
+ * only. A production build (`vite build`, what actually ships) never mounts
+ * it regardless of query string, since `import.meta.env.DEV` is false there.
+ *
  * `r3f-perf`'s GPU-time readback (`EXT_disjoint_timer_query`) forces a
  * CPU-GPU sync every frame. Under headless Chromium's SwiftShader software
  * rendering that sync stalls hard enough to starve the page's own
  * `setTimeout` queue almost completely: a bare recursive `setTimeout` chain
  * that fires 8 times a second on a blank page fired ZERO times in 3.5s on
  * this scene with Perf mounted. Confirmed by disabling Perf and re-running
- * the same chain, which then fired on schedule. `scripts/verify.ts` appends
- * `?noperf=1` so Playwright runs never hit this; a real visitor never passes
- * that flag and never mounts DEV-only Perf regardless.
+ * the same chain, which then fired on schedule. That is why `scripts/verify.ts`
+ * never passes `?debug=1` -- the opt-in default already keeps Playwright
+ * runs clear of this, with no separate flag needed.
  */
-const SKIP_PERF =
-  typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('noperf')
+const SHOW_PERF =
+  typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug')
 
 export function Scene() {
   // Block G4: capped pixel ratio on touch, part of "lighter render" -- dpr 2
@@ -79,7 +90,7 @@ export function Scene() {
 
       <ChaseCam />
 
-      {import.meta.env.DEV && !SKIP_PERF && <Perf position="bottom-left" />}
+      {import.meta.env.DEV && SHOW_PERF && <Perf position="bottom-left" />}
       {import.meta.env.DEV && <VerifyBridge />}
     </Canvas>
   )
